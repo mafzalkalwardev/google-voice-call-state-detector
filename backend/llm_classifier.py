@@ -66,7 +66,7 @@ async def classify_transcript(text: str):
                 "role": "system",
                 "content": (
                     "Classify this call-answer transcript as one of "
-                    "human_greeting, voicemail_greeting, or unknown. "
+                    "human_greeting, voicemail_greeting, call_screening_prompt, or unknown. "
                     "Return strict JSON only with classification, confidence, and reason."
                 ),
             },
@@ -89,7 +89,7 @@ async def classify_transcript(text: str):
         return rules
 
     classification = parsed.get("classification", "unknown")
-    if classification not in {"human_greeting", "voicemail_greeting", "unknown"}:
+    if classification not in {"human_greeting", "voicemail_greeting", "call_screening_prompt", "unknown"}:
         classification = "unknown"
 
     result = {
@@ -98,6 +98,7 @@ async def classify_transcript(text: str):
         "reason": str(parsed.get("reason", "LLM classified transcript."))[:240],
         "provider": provider,
         "voicemailPhraseDetected": classification == "voicemail_greeting",
+        "callScreeningDetected": classification == "call_screening_prompt",
     }
     _cache[normalized] = result
     return result

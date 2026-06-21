@@ -6,6 +6,7 @@ The detector classifies:
 
 - `still_ringing`
 - `human_picked`
+- `call_screening_prompt`
 - `voicemail_detected`
 - `no_answer`
 - `busy_or_failed`
@@ -134,6 +135,13 @@ Test D: Voicemail
 - Expected: transcript phrase such as `please leave your message` or `after the tone`
 - Expected: `finalAmdState = voicemail_detected`
 - Expected: `recommendedAction = skip_or_hangup`
+
+Test D2: Google Voice call screening
+
+- Transcript example: `Please state your name after the tone, and Google Voice will try to connect you`
+- Expected: `finalAmdState = call_screening_prompt`
+- Expected: `recommendedAction = say_name_then_continue_waiting`
+- Expected: `AMD phase = screening_prompt`, then `post_screening_wait` while it continues listening
 
 Test E: Busy
 

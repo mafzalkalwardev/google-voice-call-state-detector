@@ -23,6 +23,26 @@ def test_text_fixtures():
     return failures
 
 
+def test_screening_and_tone_context_rules():
+    cases = [
+        (
+            "Hello. Please state your name after the tone, and Google Voice will try to connect you.",
+            "call_screening_prompt",
+        ),
+        ("Please wait after the tone.", "unknown"),
+        ("Please leave a message after the tone.", "voicemail_greeting"),
+        ("The person you are trying to reach is unavailable.", "voicemail_greeting"),
+    ]
+    failures = 0
+    for text, expected in cases:
+        result = classify_transcript_rules(text)
+        actual = result["classification"]
+        ok = actual == expected
+        print(f"phrase expected={expected} actual={actual} ok={ok}")
+        failures += 0 if ok else 1
+    return failures
+
+
 def test_audio_fixture_presence():
     checks = {
         "ringback": "still_ringing",
@@ -41,7 +61,7 @@ def test_audio_fixture_presence():
 
 def main():
     generate_samples()
-    failures = test_text_fixtures() + test_audio_fixture_presence()
+    failures = test_text_fixtures() + test_screening_and_tone_context_rules() + test_audio_fixture_presence()
     if failures:
         raise SystemExit(1)
 

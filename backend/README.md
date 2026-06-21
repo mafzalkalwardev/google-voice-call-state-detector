@@ -103,6 +103,17 @@ Output:
 }
 ```
 
+Google Voice call screening phrases return:
+
+```json
+{
+  "classification": "call_screening_prompt",
+  "confidence": 0.94,
+  "reason": "Google Voice call screening phrase detected.",
+  "provider": "rules"
+}
+```
+
 ```text
 WebSocket /ws/amd-audio
 ```

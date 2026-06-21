@@ -33,6 +33,7 @@
         lastText: ""
       },
       voicemailPhraseDetected: false,
+      callScreeningDetected: false,
       classification: "unknown",
       confidence: 0,
       reason: "Backend not connected. Local AMD only."
@@ -54,8 +55,6 @@
   const VOICEMAIL_PHRASES = [
     "your call has been forwarded",
     "please leave your message",
-    "after the tone",
-    "at the tone",
     "leave a message",
     "record your message",
     "mailbox",
@@ -65,6 +64,23 @@
     "the person you are trying to reach",
     "has not set up voicemail",
     "mailbox is full"
+  ];
+  const VOICEMAIL_TONE_CONTEXT_PHRASES = [
+    "leave a message",
+    "record your message",
+    "mailbox",
+    "voice message system",
+    "not available",
+    "unavailable",
+    "the person you are trying to reach"
+  ];
+  const CALL_SCREENING_PHRASES = [
+    "state your name",
+    "please state your name",
+    "say your name",
+    "google voice will try to connect you",
+    "try to connect you",
+    "after the tone and google voice will try to connect you"
   ];
   const amdTimeline = createAmdTimeline();
 
@@ -96,6 +112,9 @@
     if (state.paused) return;
 
     const dom = detectDomState();
+    if (["dialpad_ready", "idle"].includes(dom.domState) && amdTimeline.finalAmdState === "ended") {
+      resetAmdTimeline();
+    }
     if (dom.domState === "active_call_ui" && amdTimeline.finalAmdState === "ended") {
       resetAmdTimeline();
     }
@@ -128,6 +147,7 @@
       reason: amd.reason,
       transcript: state.latestBackend.transcript,
       metrics: getAmdMetrics(),
+      amdPhase: amdTimeline.amdPhase,
       signals: dom.signals,
       controls: dom.controls,
       dom,
@@ -344,6 +364,8 @@
       beepDetectedAt: null,
       busyDetectedAt: null,
       voicemailPhraseDetectedAt: null,
+      callScreeningDetectedAt: null,
+      amdPhase: "normal",
       lastTranscript: "",
       finalAmdState: "unknown",
       confidence: 0.25,
@@ -353,6 +375,20 @@
 
   function resetAmdTimeline() {
     Object.assign(amdTimeline, createAmdTimeline());
+    state.lastStrongAudio = null;
+    state.latestBackend = {
+      ...state.latestBackend,
+      transcript: {
+        partial: "",
+        final: "",
+        lastText: ""
+      },
+      voicemailPhraseDetected: false,
+      callScreeningDetected: false,
+      classification: "unknown",
+      confidence: 0,
+      reason: state.latestBackend.backendConnected ? "Ready for next call." : "Backend not connected. Local AMD only."
+    };
   }
 
   function getEffectiveAudioState() {
@@ -503,7 +539,25 @@
     const text = `${visibleText} ${backendText}`.trim();
     amdTimeline.lastTranscript = (state.latestBackend.transcript?.lastText || visibleText).slice(0, 500);
 
-    if (!amdTimeline.voicemailPhraseDetectedAt && VOICEMAIL_PHRASES.some((phrase) => text.includes(phrase))) {
+    if (!amdTimeline.callScreeningDetectedAt && detectCallScreeningPhrase(text)) {
+      amdTimeline.callScreeningDetectedAt = Date.now();
+      amdTimeline.amdPhase = "screening_prompt";
+      dom.signals.push("google voice call screening prompt detected");
+      return;
+    }
+
+    if (!amdTimeline.callScreeningDetectedAt && state.latestBackend.callScreeningDetected) {
+      amdTimeline.callScreeningDetectedAt = Date.now();
+      amdTimeline.amdPhase = "screening_prompt";
+      dom.signals.push("backend google voice call screening prompt detected");
+      return;
+    }
+
+    if (amdTimeline.callScreeningDetectedAt && amdTimeline.amdPhase === "screening_prompt" && (amdTimeline.beepDetectedAt || amdTimeline.speechFirstAt)) {
+      amdTimeline.amdPhase = "post_screening_wait";
+    }
+
+    if (!amdTimeline.voicemailPhraseDetectedAt && detectVoicemailPhrase(text)) {
       amdTimeline.voicemailPhraseDetectedAt = Date.now();
       dom.signals.push("voicemail phrase detected");
     }
@@ -512,6 +566,18 @@
       amdTimeline.voicemailPhraseDetectedAt = Date.now();
       dom.signals.push("backend voicemail phrase detected");
     }
+  }
+
+  function detectCallScreeningPhrase(text) {
+    return CALL_SCREENING_PHRASES.some((phrase) => text.includes(phrase));
+  }
+
+  function detectVoicemailPhrase(text) {
+    if (detectCallScreeningPhrase(text)) return false;
+    const hasDirectPhrase = VOICEMAIL_PHRASES.some((phrase) => text.includes(phrase));
+    const hasTonePhrase = text.includes("after the tone") || text.includes("at the tone") || text.includes("after the beep") || text.includes("at the beep");
+    const hasToneContext = VOICEMAIL_TONE_CONTEXT_PHRASES.some((phrase) => text.includes(phrase));
+    return hasDirectPhrase || (hasTonePhrase && hasToneContext);
   }
 
   function detectStrongFailedDomText() {
@@ -560,7 +626,7 @@
       amdTimeline.totalSpeechMs >= AMD_VOICEMAIL_MIN_LONG_SPEECH_MS;
     const ringbackBeforeSpeech = Boolean(amdTimeline.ringbackFirstAt && amdTimeline.speechFirstAt && amdTimeline.ringbackFirstAt < amdTimeline.speechFirstAt);
 
-    if (dom.domState === "ended" || (dom.domState === "idle" && amdTimeline.activeCallStartedAt)) {
+    if (dom.domState === "ended" || ((dom.domState === "idle" || dom.domState === "dialpad_ready") && amdTimeline.activeCallStartedAt)) {
       return {
         finalAmdState: "ended",
         confidence: 0.9,
@@ -573,6 +639,14 @@
         finalAmdState: "voicemail_detected",
         confidence: 0.88,
         reason: "Google Voice voicemail player or inbox markers are visible."
+      };
+    }
+
+    if (amdTimeline.callScreeningDetectedAt && amdTimeline.amdPhase === "screening_prompt") {
+      return {
+        finalAmdState: "call_screening_prompt",
+        confidence: 0.92,
+        reason: "Google Voice call screening prompt detected. Say a name, then continue waiting."
       };
     }
 
@@ -692,6 +766,7 @@
     return {
       human_picked: "connect_agent",
       voicemail_detected: "skip_or_hangup",
+      call_screening_prompt: "say_name_then_continue_waiting",
       still_ringing: "keep_waiting",
       no_answer: "skip",
       busy_or_failed: "skip",
@@ -709,6 +784,8 @@
       beepDetected: Boolean(amdTimeline.beepDetectedAt),
       busyDetected: Boolean(amdTimeline.busyDetectedAt),
       voicemailPhraseDetected: Boolean(amdTimeline.voicemailPhraseDetectedAt),
+      callScreeningDetected: Boolean(amdTimeline.callScreeningDetectedAt),
+      amdPhase: amdTimeline.amdPhase,
       rms: state.latestAudio?.rms || 0,
       peak: state.latestAudio?.peak || 0,
       zcr: state.latestAudio?.zcr || 0,
@@ -1080,6 +1157,8 @@
         <div class="row"><span class="key">Beep detected</span><span class="val" id="beepDetected">-</span></div>
         <div class="row"><span class="key">Busy detected</span><span class="val" id="busyDetected">-</span></div>
         <div class="row"><span class="key">Voicemail phrase</span><span class="val" id="voicemailPhraseDetected">-</span></div>
+        <div class="row"><span class="key">Call screening</span><span class="val" id="callScreeningDetected">-</span></div>
+        <div class="row"><span class="key">AMD phase</span><span class="val" id="amdPhase">-</span></div>
         <div class="row"><span class="key">Last transcript</span><span class="val" id="lastTranscript">-</span></div>
         <div class="row"><span class="key">Recommended</span><span class="val" id="recommendedAction">-</span></div>
         <div class="row"><span class="key">Reason</span><span class="val" id="reason">-</span></div>
@@ -1299,6 +1378,8 @@
     setText(root, "beepDetected", payload.metrics?.beepDetected ? "yes" : "no");
     setText(root, "busyDetected", payload.metrics?.busyDetected ? "yes" : "no");
     setText(root, "voicemailPhraseDetected", payload.metrics?.voicemailPhraseDetected ? "yes" : "no");
+    setText(root, "callScreeningDetected", payload.metrics?.callScreeningDetected ? "yes" : "no");
+    setText(root, "amdPhase", payload.amdPhase || payload.metrics?.amdPhase || "normal");
     setText(root, "lastTranscript", payload.transcript?.lastText || "-");
     setText(root, "recommendedAction", payload.recommendedAction || "-");
     setText(root, "reason", payload.reason || "-");
@@ -1400,6 +1481,7 @@
         lastText
       },
       voicemailPhraseDetected: Boolean(update.voicemailPhraseDetected),
+      callScreeningDetected: Boolean(update.callScreeningDetected),
       classification: update.classification || state.latestBackend.classification || "unknown",
       confidence: Number(update.confidence || 0),
       reason: update.reason || state.latestBackend.reason || "",
