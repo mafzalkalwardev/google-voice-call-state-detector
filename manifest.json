@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Google Voice Real Call State Detector",
+  "version": "1.0.0",
+  "description": "Real-time Google Voice call state detector using DOM and optional local tab-audio heuristics. Does not record audio.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "tabCapture",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "https://voice.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "GV Call State Detector",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://voice.google.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "overlay.css"
+      ],
+      "matches": [
+        "https://voice.google.com/*"
+      ]
+    }
+  ]
+}

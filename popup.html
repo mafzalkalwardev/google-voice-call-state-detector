@@ -1,0 +1,100 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>GV Call State Detector</title>
+    <style>
+      body {
+        width: 340px;
+        margin: 0;
+        padding: 14px;
+        font-family: Arial, sans-serif;
+        background: #111827;
+        color: #f9fafb;
+      }
+
+      h1 {
+        font-size: 16px;
+        margin: 0 0 10px;
+      }
+
+      .box {
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+        padding: 10px;
+        margin-bottom: 10px;
+      }
+
+      button {
+        width: 100%;
+        border: 0;
+        border-radius: 8px;
+        padding: 10px;
+        margin: 6px 0;
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      .start {
+        background: #22c55e;
+        color: #052e16;
+      }
+
+      .stop {
+        background: #ef4444;
+        color: #fff;
+      }
+
+      .refresh {
+        background: #374151;
+        color: #fff;
+      }
+
+      .small {
+        font-size: 12px;
+        color: #d1d5db;
+        line-height: 1.4;
+      }
+
+      .warning {
+        color: #fbbf24;
+      }
+
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>GV Call State Detector</h1>
+
+    <div class="box small warning">
+      Use only on calls you are legally allowed to monitor. This extension detects UI/audio state only and does not record audio.
+    </div>
+
+    <div class="box">
+      <button class="start" id="startAudio">Start Tab Audio Analysis</button>
+      <button class="stop" id="stopAudio">Stop Tab Audio Analysis</button>
+      <button class="refresh" id="refresh">Refresh Status</button>
+    </div>
+
+    <div class="box">
+      <strong>Status</strong>
+      <pre id="status">Loading...</pre>
+    </div>
+
+    <div class="box small">
+      Steps:
+      <br>1. Open voice.google.com.
+      <br>2. Reload the Google Voice page after loading the extension.
+      <br>3. Make or receive a call.
+      <br>4. Watch the floating panel.
+      <br>5. Click Start Tab Audio Analysis for better outbound ringing, speech, and voicemail-beep heuristics.
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
