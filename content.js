@@ -16,6 +16,7 @@
 
   const state = {
     paused: false,
+    overlayMinimized: false,
     lastFinalState: null,
     lastActiveAt: 0,
     latestAudio: null,
@@ -23,6 +24,8 @@
     lastPayload: null,
     lastDomScan: 0
   };
+
+  const OVERLAY_POSITION_KEY = "gvDetectorOverlayPosition";
 
   const debouncedUpdate = debounce(() => updateState("mutation"), 120);
 
@@ -390,21 +393,26 @@
 
     const host = document.createElement("div");
     host.id = "gv-detector-host";
+    host.style.pointerEvents = "none";
     document.documentElement.appendChild(host);
 
     const root = host.attachShadow({ mode: "open" });
 
     const style = document.createElement("style");
     style.textContent = `
-      :host { all: initial; }
+      :host {
+        all: initial;
+        pointer-events: none;
+      }
       .panel {
         position: fixed;
-        top: 84px;
-        right: 18px;
-        width: min(390px, calc(100vw - 24px));
+        left: 86px;
+        bottom: 20px;
+        width: min(360px, calc(100vw - 24px));
         max-height: 82vh;
         overflow: auto;
         z-index: 2147483647;
+        pointer-events: auto;
         background: #111827;
         color: #f9fafb;
         border: 1px solid rgba(255, 255, 255, 0.18);
@@ -423,8 +431,19 @@
         background: rgba(255, 255, 255, 0.04);
         position: sticky;
         top: 0;
+        cursor: grab;
+        user-select: none;
+        touch-action: none;
       }
-      .title { font-weight: 700; font-size: 14px; }
+      .header.dragging {
+        cursor: grabbing;
+      }
+      .title {
+        flex: 1;
+        min-width: 0;
+        font-weight: 700;
+        font-size: 14px;
+      }
       .badge {
         padding: 4px 8px;
         border-radius: 8px;
@@ -435,6 +454,11 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
       }
       .body { padding: 12px 14px; }
       .row {
@@ -477,6 +501,29 @@
         font-size: 12px;
       }
       button:hover { background: #4b5563; }
+      .minimize-btn {
+        padding: 5px 8px;
+        white-space: nowrap;
+      }
+      .panel.minimized {
+        width: auto;
+        min-width: 168px;
+        max-width: calc(100vw - 24px);
+        max-height: none;
+        overflow: visible;
+      }
+      .panel.minimized .header {
+        border-bottom: 0;
+        padding: 8px;
+        border-radius: 8px;
+      }
+      .panel.minimized .title,
+      .panel.minimized .body {
+        display: none;
+      }
+      .panel.minimized .badge {
+        max-width: min(240px, calc(100vw - 112px));
+      }
       .small { color: #9ca3af; font-size: 11px; line-height: 1.35; }
       .danger { color: #fca5a5; }
       ul { margin: 6px 0 0 16px; padding: 0; }
@@ -487,7 +534,10 @@
     panel.innerHTML = `
       <div class="header">
         <div class="title">GV Call State Detector</div>
-        <div class="badge" id="finalState">Starting...</div>
+        <div class="header-actions">
+          <div class="badge" id="finalState">Starting...</div>
+          <button class="minimize-btn" id="minimizeBtn">Minimize</button>
+        </div>
       </div>
       <div class="body">
         <div class="row"><span class="key">DOM</span><span class="val" id="domState">-</span></div>
@@ -511,6 +561,16 @@
 
     root.appendChild(style);
     root.appendChild(panel);
+
+    restoreOverlayPosition(panel);
+    installOverlayDragBehavior(root, panel);
+
+    root.getElementById("minimizeBtn").addEventListener("click", () => {
+      state.overlayMinimized = !state.overlayMinimized;
+      panel.classList.toggle("minimized", state.overlayMinimized);
+      root.getElementById("minimizeBtn").textContent = state.overlayMinimized ? "Expand" : "Minimize";
+      clampAndApplyOverlayPosition(panel, readPanelPosition(panel), { save: true });
+    });
 
     root.getElementById("pauseBtn").addEventListener("click", () => {
       state.paused = !state.paused;
@@ -540,6 +600,126 @@
       state.history = [];
       renderOverlay(state.lastPayload);
     });
+  }
+
+  function restoreOverlayPosition(panel) {
+    const saved = readSavedOverlayPosition();
+
+    if (saved) {
+      clampAndApplyOverlayPosition(panel, saved, { save: false });
+      return;
+    }
+
+    panel.style.left = "86px";
+    panel.style.right = "auto";
+    panel.style.top = "auto";
+    panel.style.bottom = "20px";
+  }
+
+  function readSavedOverlayPosition() {
+    try {
+      const value = JSON.parse(localStorage.getItem(OVERLAY_POSITION_KEY) || "null");
+      if (Number.isFinite(value?.left) && Number.isFinite(value?.top)) return value;
+    } catch (err) {
+      // Ignore bad saved overlay coordinates and fall back to the default bottom-left position.
+    }
+
+    return null;
+  }
+
+  function saveOverlayPosition(position) {
+    try {
+      localStorage.setItem(OVERLAY_POSITION_KEY, JSON.stringify(position));
+    } catch (err) {
+      // localStorage can be unavailable in unusual browser/privacy modes.
+    }
+  }
+
+  function readPanelPosition(panel) {
+    const rect = panel.getBoundingClientRect();
+    return {
+      left: rect.left,
+      top: rect.top
+    };
+  }
+
+  function clampAndApplyOverlayPosition(panel, position, options = {}) {
+    const { save = true } = options;
+    const rect = panel.getBoundingClientRect();
+    const margin = 8;
+    const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+    const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+    const next = {
+      left: clamp(position.left, margin, maxLeft),
+      top: clamp(position.top, margin, maxTop)
+    };
+
+    panel.style.left = `${next.left}px`;
+    panel.style.top = `${next.top}px`;
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
+
+    if (save) saveOverlayPosition(next);
+    return next;
+  }
+
+  function installOverlayDragBehavior(root, panel) {
+    const header = root.querySelector(".header");
+    let drag = null;
+
+    // The header is the drag handle. During drag we convert the panel to explicit
+    // top/left coordinates, clamp movement to the viewport, and persist the result.
+    header.addEventListener("pointerdown", (event) => {
+      if (event.target.closest("button")) return;
+
+      const rect = panel.getBoundingClientRect();
+      drag = {
+        pointerId: event.pointerId,
+        offsetX: event.clientX - rect.left,
+        offsetY: event.clientY - rect.top
+      };
+
+      header.setPointerCapture(event.pointerId);
+      header.classList.add("dragging");
+      document.documentElement.style.userSelect = "none";
+      panel.style.left = `${rect.left}px`;
+      panel.style.top = `${rect.top}px`;
+      panel.style.right = "auto";
+      panel.style.bottom = "auto";
+      event.preventDefault();
+    });
+
+    header.addEventListener("pointermove", (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+
+      clampAndApplyOverlayPosition(panel, {
+        left: event.clientX - drag.offsetX,
+        top: event.clientY - drag.offsetY
+      }, { save: false });
+
+      event.preventDefault();
+    });
+
+    const finishDrag = (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+
+      header.releasePointerCapture(event.pointerId);
+      header.classList.remove("dragging");
+      document.documentElement.style.userSelect = "";
+      clampAndApplyOverlayPosition(panel, readPanelPosition(panel), { save: true });
+      drag = null;
+    };
+
+    header.addEventListener("pointerup", finishDrag);
+    header.addEventListener("pointercancel", finishDrag);
+
+    window.addEventListener("resize", () => {
+      clampAndApplyOverlayPosition(panel, readPanelPosition(panel), { save: true });
+    });
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
   }
 
   function renderOverlay(payload) {
