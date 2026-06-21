@@ -8,8 +8,16 @@ let intervalId = null;
 
 const audioMemory = {
   frames: [],
-  lastSent: 0
+  lastSent: 0,
+  lastStrongState: null
 };
+
+const STRONG_AUDIO_STATES = new Set([
+  "audio_ringback_like",
+  "audio_speech_like",
+  "audio_beep_like",
+  "audio_busy_like"
+]);
 
 function now() {
   return Date.now();
@@ -115,12 +123,20 @@ function analyzeAudioFrame() {
     toneStability: calculateToneStability(freqData)
   };
 
+  frame.silence = frame.rms < 0.008;
+  frame.tone = frame.rms > 0.014 && frame.toneStability > 0.08;
+  frame.beep = frame.rms > 0.02 &&
+    frame.toneStability > 0.18 &&
+    frame.dominantFrequency > 350 &&
+    frame.dominantFrequency < 1800;
+  frame.speechActivity = frame.rms > 0.014 && frame.zcr > 0.032;
+
   audioMemory.frames.push(frame);
   audioMemory.frames = audioMemory.frames.filter((item) => now() - item.ts <= 8000);
 
   if (now() - audioMemory.lastSent > 500) {
     audioMemory.lastSent = now();
-    safeSendAudio(classifyAudio(audioMemory.frames));
+    safeSendAudio(smoothAudioState(classifyAudio(audioMemory.frames)));
   }
 }
 
@@ -200,41 +216,73 @@ function classifyAudio(frames) {
   const longSilent = longer.filter((frame) => frame.rms < 0.008);
   const freqVariance = variance(recent.map((frame) => frame.dominantFrequency));
   const rmsVariance = variance(recent.map((frame) => frame.rms));
+  const toneFrames = recent.filter((frame) => frame.tone).length;
+  const beepFrames = recent.filter((frame) => frame.beep).length;
+  const speechFrames = recent.filter((frame) => frame.speechActivity).length;
+  const ringbackPattern = longer.length >= 14 &&
+    longLoud.length >= 4 &&
+    longSilent.length >= 4 &&
+    toneFrames >= Math.max(2, recent.length * 0.3) &&
+    rmsVariance > 0.00002;
+  const busyTonePattern = longer.length >= 12 &&
+    longLoud.length >= 5 &&
+    longSilent.length >= 3 &&
+    toneAvg > 0.12 &&
+    freqAvg > 300 &&
+    freqAvg < 700 &&
+    freqVariance < 16000;
 
-  if (silentFrames >= Math.max(4, recent.length * 0.75)) {
+  const metrics = {
+    rms: rmsAvg,
+    peak: peakAvg,
+    zcr: zcrAvg,
+    dominantFrequency: Math.round(freqAvg),
+    toneStability: toneAvg,
+    frequencyVariance: freqVariance,
+    rmsVariance,
+    speechActivity: speechFrames >= Math.max(3, recent.length * 0.45),
+    silence: silentFrames >= Math.max(4, recent.length * 0.75),
+    tone: toneFrames >= Math.max(2, recent.length * 0.35),
+    beep: beepFrames >= 2,
+    ringbackPattern,
+    busyTonePattern
+  };
+
+  if (metrics.silence) {
     return {
       state: "audio_silence",
       confidence: 0.8,
-      rms: rmsAvg,
-      peak: peakAvg,
-      zcr: zcrAvg,
-      dominantFrequency: Math.round(freqAvg),
+      ...metrics,
       reason: "Low RMS for recent frames.",
       ts
     };
   }
 
-  if (rmsAvg > 0.02 && toneAvg > 0.18 && freqAvg > 350 && freqAvg < 1800 && freqVariance < 12000) {
+  if (metrics.beep && freqVariance < 12000) {
     return {
       state: "audio_beep_like",
       confidence: 0.72,
-      rms: rmsAvg,
-      peak: peakAvg,
-      zcr: zcrAvg,
-      dominantFrequency: Math.round(freqAvg),
+      ...metrics,
       reason: "Stable tone detected. Could be voicemail beep or call tone.",
       ts
     };
   }
 
-  if (longer.length >= 14 && longLoud.length >= 4 && longSilent.length >= 4 && toneAvg > 0.08 && rmsVariance > 0.00002) {
+  if (busyTonePattern) {
+    return {
+      state: "audio_busy_like",
+      confidence: 0.72,
+      ...metrics,
+      reason: "Repeated busy-tone-like cadence detected.",
+      ts
+    };
+  }
+
+  if (ringbackPattern) {
     return {
       state: "audio_ringback_like",
       confidence: 0.65,
-      rms: rmsAvg,
-      peak: peakAvg,
-      zcr: zcrAvg,
-      dominantFrequency: Math.round(freqAvg),
+      ...metrics,
       reason: "Repeating tone/silence pattern detected. Could be outbound ringing.",
       ts
     };
@@ -244,10 +292,7 @@ function classifyAudio(frames) {
     return {
       state: "audio_speech_like",
       confidence: 0.68,
-      rms: rmsAvg,
-      peak: peakAvg,
-      zcr: zcrAvg,
-      dominantFrequency: Math.round(freqAvg),
+      ...metrics,
       reason: "Irregular audio pattern detected. Could be human or voicemail greeting speech.",
       ts
     };
@@ -256,13 +301,51 @@ function classifyAudio(frames) {
   return {
     state: "audio_unknown",
     confidence: 0.35,
-    rms: rmsAvg,
-    peak: peakAvg,
-    zcr: zcrAvg,
-    dominantFrequency: Math.round(freqAvg),
+    ...metrics,
     reason: "Audio present but not classified confidently.",
     ts
   };
+}
+
+function smoothAudioState(audio) {
+  const ts = now();
+
+  if (STRONG_AUDIO_STATES.has(audio.state)) {
+    audioMemory.lastStrongState = {
+      ...audio,
+      lastSeenAt: ts
+    };
+    return audio;
+  }
+
+  const lastStrong = audioMemory.lastStrongState;
+  if (!lastStrong || ts - lastStrong.lastSeenAt > 2500) return audio;
+
+  if (audio.state === "audio_silence") {
+    const recentSilence = audioMemory.frames.filter((frame) => ts - frame.ts <= 1500 && frame.silence);
+    if (lastStrong.state === "audio_speech_like" && recentSilence.length < 5) {
+      return {
+        ...lastStrong,
+        state: "audio_speech_like",
+        confidence: Math.max(0.5, lastStrong.confidence - 0.08),
+        smoothedFrom: audio.state,
+        reason: "Holding speech state until silence is continuous.",
+        ts
+      };
+    }
+  }
+
+  if (audio.state === "audio_unknown" || audio.state === "audio_silence") {
+    return {
+      ...lastStrong,
+      confidence: Math.max(0.45, lastStrong.confidence - 0.1),
+      smoothedFrom: audio.state,
+      reason: `Holding recent strong audio state over ${audio.state}.`,
+      ts
+    };
+  }
+
+  return audio;
 }
 
 function avg(items, key) {

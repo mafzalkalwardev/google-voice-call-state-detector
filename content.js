@@ -19,6 +19,7 @@
     overlayMinimized: false,
     lastFinalState: null,
     lastActiveAt: 0,
+    lastSummarySavedAt: 0,
     latestAudio: null,
     history: [],
     lastPayload: null,
@@ -26,6 +27,29 @@
   };
 
   const OVERLAY_POSITION_KEY = "gvDetectorOverlayPosition";
+  const NO_ANSWER_TIMEOUT_MS = 30000;
+  const STRONG_AUDIO_STATES = new Set([
+    "audio_ringback_like",
+    "audio_speech_like",
+    "audio_beep_like",
+    "audio_busy_like"
+  ]);
+  const VOICEMAIL_PHRASES = [
+    "your call has been forwarded",
+    "please leave your message",
+    "after the tone",
+    "at the tone",
+    "leave a message",
+    "record your message",
+    "mailbox",
+    "voice message system",
+    "not available",
+    "unavailable",
+    "the person you are trying to reach",
+    "has not set up voicemail",
+    "mailbox is full"
+  ];
+  const amdTimeline = createAmdTimeline();
 
   const debouncedUpdate = debounce(() => updateState("mutation"), 120);
 
@@ -55,11 +79,14 @@
     if (state.paused) return;
 
     const dom = detectDomState();
-    const audio = state.latestAudio;
-    const combined = combineState(dom, audio);
+    if (dom.domState === "active_call_ui" && amdTimeline.finalAmdState === "ended") {
+      resetAmdTimeline();
+    }
+    const audio = getEffectiveAudioState();
+    const amd = updateAmdTimeline(dom, audio);
     const ts = Date.now();
 
-    if (combined.finalState === "outbound_or_active_call_ui") {
+    if (dom.domState === "active_call_ui") {
       state.lastActiveAt = ts;
     }
 
@@ -68,15 +95,25 @@
       source,
       ts,
       isoTime: new Date(ts).toISOString(),
+      number: dom.number,
+      timer: dom.timer || dom.elapsedA11y,
+      domState: dom.domState,
+      audioState: audio?.state || "audio_not_started",
+      finalAmdState: amd.finalAmdState,
+      finalState: amd.finalAmdState,
+      confidence: amd.confidence,
+      recommendedAction: getRecommendedAction(amd.finalAmdState),
+      reason: amd.reason,
+      metrics: getAmdMetrics(),
+      signals: dom.signals,
+      controls: dom.controls,
       dom,
       audio,
-      finalState: combined.finalState,
-      confidence: combined.confidence,
-      reason: combined.reason,
+      amdTimeline: getAmdSnapshot(),
       history: state.history.slice(0, 25)
     };
 
-    const changed = payload.finalState !== state.lastFinalState ||
+    const changed = payload.finalAmdState !== state.lastFinalState ||
       dom.domState !== state.lastPayload?.dom?.domState ||
       audio?.state !== state.lastPayload?.audio?.state;
 
@@ -85,15 +122,12 @@
       payload.history = state.history.slice(0, 25);
     }
 
-    state.lastFinalState = payload.finalState;
+    state.lastFinalState = payload.finalAmdState;
     state.lastPayload = payload;
 
     renderOverlay(payload);
     dispatchPageEvents(payload);
-
-    chrome.storage.local.set({
-      gvDetectorLatestState: payload
-    }).catch(() => {});
+    maybeSaveSummary(payload, changed);
   }
 
   function detectDomState() {
@@ -134,12 +168,28 @@
     const hasIncomingText = bodyText.includes("incoming call");
     const hasAnswerDecline = hasAny(buttonLabels, ["answer"]) && hasAny(buttonLabels, ["decline", "ignore"]);
     const hasEndCall = hasAny(buttonLabels, ["end call", "hang up", "hangup"]);
-    const hasActiveControls = hasAny(buttonLabels, ["mute", "hold", "transfer", "keypad", "record"]);
+    const hasActiveControls = hasAny(buttonLabels, ["mute", "hold", "transfer", "record"]);
     const hasOngoingText = bodyText.includes("ongoing call");
+    const hasDialpadText = bodyText.includes("enter a name or number") || hasAny(buttonLabels, ["call", "keypad"]);
     const hasVoicemailText = bodyText.includes("voicemail") && (
       hasAny(ariaLabels, ["play voicemail", "pause voicemail"]) ||
       bodyText.includes("transcript")
     );
+    const hasFailedText = [
+      "call failed",
+      "could not be completed",
+      "not available",
+      "unavailable",
+      "busy",
+      "try again later"
+    ].some((text) => bodyText.includes(text));
+    const hasStrongActiveSignal = visible(outgoingOrActiveCall) ||
+      hasOngoingText ||
+      visible(inCallStatus) ||
+      Boolean(timer) ||
+      Boolean(elapsedA11y) ||
+      hasEndCall ||
+      hasActiveControls;
     const roleAlertIncoming = [...document.querySelectorAll("[role='alert']")]
       .some((el) => normalizeText(el.textContent).includes("incoming call"));
 
@@ -155,14 +205,18 @@
       domState = "incoming_ringing";
       confidence = 0.88;
       reason = "Incoming call wrapper, text, alert, or Answer/Decline controls found.";
-    } else if (visible(outgoingOrActiveCall) || visible(sidebar) || hasOngoingText || hasEndCall || hasActiveControls || visible(inCallStatus) || timer || elapsedA11y) {
-      domState = "outbound_or_active_call_ui";
+    } else if (hasStrongActiveSignal) {
+      domState = "active_call_ui";
       confidence = 0.83;
-      reason = "Active Google Voice call UI markers found.";
-    } else if (visible(makeCallPanel) && hasNoActiveCall) {
+      reason = "Strong active Google Voice call UI markers found.";
+    } else if (visible(makeCallPanel) || (hasNoActiveCall && hasDialpadText)) {
       domState = "dialpad_ready";
       confidence = 0.78;
-      reason = "Dialpad panel visible while root has no-active-call.";
+      reason = "Dialpad/search panel visible without strong active call controls.";
+    } else if (hasFailedText) {
+      domState = "unknown_transition";
+      confidence = 0.68;
+      reason = "Google Voice text suggests a failed or unavailable call.";
     } else if (hasNoActiveCall) {
       if (Date.now() - state.lastActiveAt < 4000) {
         domState = "ended";
@@ -260,6 +314,349 @@
     };
   }
 
+  function createAmdTimeline() {
+    return {
+      callStartedAt: null,
+      activeCallStartedAt: null,
+      firstAudioAt: null,
+      ringbackFirstAt: null,
+      ringbackLastAt: null,
+      ringbackTotalMs: 0,
+      speechFirstAt: null,
+      speechLastAt: null,
+      speechSegments: [],
+      currentSpeechStartedAt: null,
+      longestSpeechMs: 0,
+      totalSpeechMs: 0,
+      silenceStartedAt: null,
+      silenceAfterSpeechMs: 0,
+      beepDetectedAt: null,
+      busyDetectedAt: null,
+      voicemailPhraseDetectedAt: null,
+      lastTranscript: "",
+      finalAmdState: "unknown",
+      confidence: 0.25,
+      reason: "Waiting for call session and audio."
+    };
+  }
+
+  function resetAmdTimeline() {
+    Object.assign(amdTimeline, createAmdTimeline());
+  }
+
+  function getEffectiveAudioState() {
+    const audio = state.latestAudio || {
+      state: "audio_not_started",
+      confidence: 0,
+      reason: "Tab audio analysis has not started.",
+      ts: Date.now()
+    };
+
+    const ts = Date.now();
+    if (STRONG_AUDIO_STATES.has(audio.state)) {
+      state.lastStrongAudio = {
+        ...audio,
+        lastSeenAt: ts
+      };
+      return audio;
+    }
+
+    const lastStrong = state.lastStrongAudio;
+    if (!lastStrong || ts - lastStrong.lastSeenAt > 2500) return audio;
+
+    if (audio.state === "audio_silence" && lastStrong.state === "audio_speech_like") {
+      const silenceStartedAt = amdTimeline.silenceStartedAt || ts;
+      if (ts - silenceStartedAt < 1500) {
+        return {
+          ...lastStrong,
+          confidence: Math.max(0.45, lastStrong.confidence - 0.1),
+          smoothedFrom: "audio_silence",
+          ts
+        };
+      }
+    }
+
+    if (audio.state === "audio_unknown" || audio.state === "audio_silence") {
+      return {
+        ...lastStrong,
+        confidence: Math.max(0.45, lastStrong.confidence - 0.12),
+        smoothedFrom: audio.state,
+        ts
+      };
+    }
+
+    return audio;
+  }
+
+  function updateAmdTimeline(dom, audio) {
+    const ts = Date.now();
+    const audioState = audio?.state || "audio_not_started";
+
+    if (dom.domState === "active_call_ui") {
+      amdTimeline.callStartedAt ||= ts;
+      amdTimeline.activeCallStartedAt ||= ts;
+    }
+
+    if (audioState !== "audio_not_started" && audioState !== "audio_stopped") {
+      amdTimeline.firstAudioAt ||= ts;
+    }
+
+    updateTranscriptEvidence(dom);
+
+    if (audioState === "audio_ringback_like") {
+      amdTimeline.ringbackFirstAt ||= ts;
+      if (amdTimeline.ringbackLastAt) {
+        amdTimeline.ringbackTotalMs += Math.min(1000, ts - amdTimeline.ringbackLastAt);
+      }
+      amdTimeline.ringbackLastAt = ts;
+    }
+
+    if (audioState === "audio_speech_like") {
+      amdTimeline.speechFirstAt ||= ts;
+      amdTimeline.speechLastAt = ts;
+      amdTimeline.silenceStartedAt = null;
+      amdTimeline.silenceAfterSpeechMs = 0;
+      if (!amdTimeline.currentSpeechStartedAt) {
+        amdTimeline.currentSpeechStartedAt = ts;
+      }
+      const currentMs = ts - amdTimeline.currentSpeechStartedAt;
+      amdTimeline.longestSpeechMs = Math.max(amdTimeline.longestSpeechMs, currentMs);
+      amdTimeline.totalSpeechMs = estimateTotalSpeechMs(ts);
+    } else if (amdTimeline.currentSpeechStartedAt) {
+      const endedAt = amdTimeline.speechLastAt || ts;
+      const durationMs = Math.max(0, endedAt - amdTimeline.currentSpeechStartedAt);
+      if (durationMs > 150) {
+        amdTimeline.speechSegments.push({
+          startedAt: amdTimeline.currentSpeechStartedAt,
+          endedAt,
+          durationMs
+        });
+      }
+      amdTimeline.longestSpeechMs = Math.max(amdTimeline.longestSpeechMs, durationMs);
+      amdTimeline.currentSpeechStartedAt = null;
+      amdTimeline.totalSpeechMs = estimateTotalSpeechMs(ts);
+    }
+
+    if (audioState === "audio_silence") {
+      amdTimeline.silenceStartedAt ||= ts;
+      if (amdTimeline.speechLastAt) {
+        amdTimeline.silenceAfterSpeechMs = ts - amdTimeline.speechLastAt;
+      }
+    } else if (audioState !== "audio_speech_like") {
+      amdTimeline.silenceStartedAt = null;
+    }
+
+    if (audioState === "audio_beep_like") {
+      amdTimeline.beepDetectedAt ||= ts;
+    }
+
+    if (audioState === "audio_busy_like" || detectFailedDomText()) {
+      amdTimeline.busyDetectedAt ||= ts;
+    }
+
+    const decision = decideAmdState(dom, audio, ts);
+    amdTimeline.finalAmdState = decision.finalAmdState;
+    amdTimeline.confidence = decision.confidence;
+    amdTimeline.reason = decision.reason;
+
+    return decision;
+  }
+
+  function updateTranscriptEvidence(dom) {
+    const text = normalizeText(document.body?.innerText || "");
+    amdTimeline.lastTranscript = text.slice(0, 500);
+
+    if (!amdTimeline.voicemailPhraseDetectedAt && VOICEMAIL_PHRASES.some((phrase) => text.includes(phrase))) {
+      amdTimeline.voicemailPhraseDetectedAt = Date.now();
+      dom.signals.push("voicemail phrase detected");
+    }
+  }
+
+  function detectFailedDomText() {
+    const text = normalizeText(document.body?.innerText || "");
+    return [
+      "call failed",
+      "could not be completed",
+      "not available",
+      "unavailable",
+      "busy",
+      "try again later"
+    ].some((phrase) => text.includes(phrase));
+  }
+
+  function estimateTotalSpeechMs(ts) {
+    const closedTotal = amdTimeline.speechSegments.reduce((sum, segment) => sum + segment.durationMs, 0);
+    const currentTotal = amdTimeline.currentSpeechStartedAt ? ts - amdTimeline.currentSpeechStartedAt : 0;
+    return closedTotal + currentTotal;
+  }
+
+  function decideAmdState(dom, audio, ts) {
+    const audioState = audio?.state || "audio_not_started";
+    const activeMs = amdTimeline.activeCallStartedAt ? ts - amdTimeline.activeCallStartedAt : 0;
+    const hasSpeech = Boolean(amdTimeline.speechFirstAt);
+    const shortSpeech = amdTimeline.longestSpeechMs >= 300 && amdTimeline.longestSpeechMs <= 3500;
+    const shortPauseAfterSpeech = amdTimeline.silenceAfterSpeechMs >= 500 && amdTimeline.silenceAfterSpeechMs <= 2500;
+    const longGreeting = amdTimeline.longestSpeechMs >= 4500 || amdTimeline.totalSpeechMs >= 6000;
+    const ringbackBeforeSpeech = Boolean(amdTimeline.ringbackFirstAt && amdTimeline.speechFirstAt && amdTimeline.ringbackFirstAt < amdTimeline.speechFirstAt);
+
+    if (dom.domState === "ended" || (dom.domState === "idle" && amdTimeline.activeCallStartedAt)) {
+      return {
+        finalAmdState: "ended",
+        confidence: 0.9,
+        reason: "Active call UI ended or returned to idle."
+      };
+    }
+
+    if (dom.domState === "voicemail_player_or_inbox") {
+      return {
+        finalAmdState: "voicemail_detected",
+        confidence: 0.88,
+        reason: "Google Voice voicemail player or inbox markers are visible."
+      };
+    }
+
+    if (amdTimeline.busyDetectedAt) {
+      return {
+        finalAmdState: "busy_or_failed",
+        confidence: audioState === "audio_busy_like" ? 0.78 : 0.65,
+        reason: audioState === "audio_busy_like" ? "Busy-tone-like audio cadence detected." : "Google Voice failure or unavailable text detected."
+      };
+    }
+
+    if (amdTimeline.beepDetectedAt && hasSpeech) {
+      return {
+        finalAmdState: "voicemail_detected",
+        confidence: 0.93,
+        reason: "Beep-like tone detected after speech, which strongly suggests voicemail."
+      };
+    }
+
+    if (amdTimeline.voicemailPhraseDetectedAt) {
+      return {
+        finalAmdState: "voicemail_detected",
+        confidence: 0.9,
+        reason: "Voicemail phrase detected in visible transcript/text."
+      };
+    }
+
+    if (dom.domState === "active_call_ui" && longGreeting) {
+      return {
+        finalAmdState: "voicemail_detected",
+        confidence: 0.78,
+        reason: "Long continuous or repeated speech suggests voicemail greeting."
+      };
+    }
+
+    if (dom.domState === "active_call_ui" && hasSpeech && shortSpeech && shortPauseAfterSpeech && !amdTimeline.beepDetectedAt && !amdTimeline.voicemailPhraseDetectedAt) {
+      return {
+        finalAmdState: "human_picked",
+        confidence: ringbackBeforeSpeech ? 0.82 : 0.72,
+        reason: ringbackBeforeSpeech ?
+          "Ringback was followed by a short speech greeting and a short pause with no voicemail evidence." :
+          "Short speech greeting followed by a short pause with no voicemail evidence."
+      };
+    }
+
+    if (dom.domState === "active_call_ui" && amdTimeline.ringbackFirstAt && !hasSpeech && !amdTimeline.beepDetectedAt) {
+      if (activeMs >= NO_ANSWER_TIMEOUT_MS) {
+        return {
+          finalAmdState: "no_answer",
+          confidence: 0.76,
+          reason: "Ringback continued past the no-answer timeout without speech, beep, or busy signal."
+        };
+      }
+
+      return {
+        finalAmdState: "still_ringing",
+        confidence: Math.min(0.85, 0.65 + (amdTimeline.ringbackTotalMs / 60000)),
+        reason: "Active call UI with repeated ringback-like audio and no speech or beep yet."
+      };
+    }
+
+    if (dom.domState === "incoming_ringing") {
+      return {
+        finalAmdState: "still_ringing",
+        confidence: 0.82,
+        reason: "Incoming ringing UI is visible."
+      };
+    }
+
+    if (dom.domState === "dialpad_ready") {
+      return {
+        finalAmdState: "unknown",
+        confidence: 0.5,
+        reason: "Dialpad is ready; no active outbound call session."
+      };
+    }
+
+    if (dom.domState === "idle") {
+      return {
+        finalAmdState: "unknown",
+        confidence: 0.55,
+        reason: "Google Voice appears idle."
+      };
+    }
+
+    return {
+      finalAmdState: "unknown",
+      confidence: 0.35,
+      reason: "Waiting for stronger AMD evidence."
+    };
+  }
+
+  function getRecommendedAction(finalAmdState) {
+    return {
+      human_picked: "connect_agent",
+      voicemail_detected: "skip_or_hangup",
+      still_ringing: "keep_waiting",
+      no_answer: "skip",
+      busy_or_failed: "skip",
+      ended: "cleanup",
+      unknown: "wait"
+    }[finalAmdState] || "wait";
+  }
+
+  function getAmdMetrics() {
+    return {
+      ringbackTotalMs: amdTimeline.ringbackTotalMs,
+      longestSpeechMs: amdTimeline.longestSpeechMs,
+      totalSpeechMs: amdTimeline.totalSpeechMs,
+      silenceAfterSpeechMs: amdTimeline.silenceAfterSpeechMs,
+      beepDetected: Boolean(amdTimeline.beepDetectedAt),
+      busyDetected: Boolean(amdTimeline.busyDetectedAt),
+      voicemailPhraseDetected: Boolean(amdTimeline.voicemailPhraseDetectedAt)
+    };
+  }
+
+  function getAmdSnapshot() {
+    return {
+      ...amdTimeline,
+      metrics: getAmdMetrics()
+    };
+  }
+
+  function maybeSaveSummary(payload, changed) {
+    const ts = Date.now();
+    if (!changed && ts - state.lastSummarySavedAt < 3000) return;
+
+    state.lastSummarySavedAt = ts;
+    chrome.storage.local.set({
+      gvDetectorLatestState: {
+        ts: payload.ts,
+        isoTime: payload.isoTime,
+        number: payload.number,
+        timer: payload.timer,
+        domState: payload.domState,
+        audioState: payload.audioState,
+        finalAmdState: payload.finalAmdState,
+        confidence: payload.confidence,
+        recommendedAction: payload.recommendedAction,
+        reason: payload.reason,
+        metrics: payload.metrics
+      }
+    }).catch(() => {});
+  }
+
   function dispatchPageEvents(payload) {
     try {
       window.dispatchEvent(new CustomEvent("GV_CALL_STATE_UPDATE", {
@@ -274,6 +671,23 @@
         type: "GV_CALL_STATE_UPDATE",
         payload
       }, window.location.origin);
+    } catch (err) {
+      // Ignore postMessage failures.
+    }
+
+    try {
+      window.dispatchEvent(new CustomEvent("GV_AMD_STATE_UPDATE", {
+        detail: payload
+      }));
+    } catch (err) {
+      // Ignore page event failures.
+    }
+
+    try {
+      window.postMessage({
+        type: "GV_AMD_STATE_UPDATE",
+        payload
+      }, "*");
     } catch (err) {
       // Ignore postMessage failures.
     }
@@ -379,8 +793,9 @@
       ts: payload.ts,
       time: new Date(payload.ts).toLocaleTimeString(),
       finalState: payload.finalState,
+      finalAmdState: payload.finalAmdState,
       domState: payload.dom.domState,
-      audioState: payload.audio?.state || "none",
+      audioState: payload.audioState || payload.audio?.state || "audio_not_started",
       confidence: payload.confidence,
       reason: payload.reason
     });
@@ -533,24 +948,35 @@
     panel.className = "panel";
     panel.innerHTML = `
       <div class="header">
-        <div class="title">GV Call State Detector</div>
+        <div class="title">GV AMD Detector</div>
         <div class="header-actions">
           <div class="badge" id="finalState">Starting...</div>
           <button class="minimize-btn" id="minimizeBtn">Minimize</button>
         </div>
       </div>
       <div class="body">
-        <div class="row"><span class="key">DOM</span><span class="val" id="domState">-</span></div>
+        <div class="row"><span class="key">DOM session</span><span class="val" id="domState">-</span></div>
         <div class="row"><span class="key">Audio</span><span class="val" id="audioState">-</span></div>
+        <div class="row"><span class="key">Final AMD</span><span class="val" id="amdState">-</span></div>
         <div class="row"><span class="key">Confidence</span><span class="val" id="confidence">-</span></div>
         <div class="row"><span class="key">Number</span><span class="val" id="number">-</span></div>
         <div class="row"><span class="key">Timer</span><span class="val" id="timer">-</span></div>
+        <div class="row"><span class="key">Ringback</span><span class="val" id="ringbackMs">-</span></div>
+        <div class="row"><span class="key">Speech total</span><span class="val" id="speechMs">-</span></div>
+        <div class="row"><span class="key">Longest speech</span><span class="val" id="longestSpeechMs">-</span></div>
+        <div class="row"><span class="key">Silence after speech</span><span class="val" id="silenceAfterSpeechMs">-</span></div>
+        <div class="row"><span class="key">Beep detected</span><span class="val" id="beepDetected">-</span></div>
+        <div class="row"><span class="key">Busy detected</span><span class="val" id="busyDetected">-</span></div>
+        <div class="row"><span class="key">Voicemail phrase</span><span class="val" id="voicemailPhraseDetected">-</span></div>
+        <div class="row"><span class="key">Recommended</span><span class="val" id="recommendedAction">-</span></div>
         <div class="row"><span class="key">Reason</span><span class="val" id="reason">-</span></div>
-        <div class="small danger">Audio is heuristic only. DOM cannot always tell outbound human pickup vs voicemail.</div>
+        <div class="small danger">AMD is heuristic. Audio is local and not recorded.</div>
         <div class="signals"><strong>Signals</strong><div id="signals">-</div></div>
         <div class="signals"><strong>Controls</strong><div id="controls">-</div></div>
         <div class="history"><strong>History</strong><div id="history">-</div></div>
         <div class="buttons">
+          <button id="startAudioBtn">Start Audio</button>
+          <button id="stopAudioBtn">Stop Audio</button>
           <button id="pauseBtn">Pause</button>
           <button id="copyBtn">Copy Snapshot</button>
           <button id="downloadBtn">Download JSON</button>
@@ -570,6 +996,14 @@
       panel.classList.toggle("minimized", state.overlayMinimized);
       root.getElementById("minimizeBtn").textContent = state.overlayMinimized ? "Expand" : "Minimize";
       clampAndApplyOverlayPosition(panel, readPanelPosition(panel), { save: true });
+    });
+
+    root.getElementById("startAudioBtn").addEventListener("click", async () => {
+      await chrome.runtime.sendMessage({ type: "START_AUDIO_FROM_OVERLAY" }).catch(() => {});
+    });
+
+    root.getElementById("stopAudioBtn").addEventListener("click", async () => {
+      await chrome.runtime.sendMessage({ type: "STOP_AUDIO_FROM_OVERLAY" }).catch(() => {});
     });
 
     root.getElementById("pauseBtn").addEventListener("click", () => {
@@ -727,22 +1161,37 @@
     const root = host?.shadowRoot;
     if (!root || !payload) return;
 
-    setText(root, "finalState", payload.finalState);
-    setText(root, "domState", payload.dom.domState);
-    setText(root, "audioState", payload.audio?.state || "none");
+    setText(root, "finalState", payload.finalAmdState);
+    setText(root, "domState", payload.domState);
+    setText(root, "audioState", payload.audioState);
+    setText(root, "amdState", payload.finalAmdState);
     setText(root, "confidence", `${Math.round((payload.confidence || 0) * 100)}%`);
-    setText(root, "number", payload.dom.number || "-");
-    setText(root, "timer", payload.dom.timer || payload.dom.elapsedA11y || "-");
+    setText(root, "number", payload.number || "-");
+    setText(root, "timer", payload.timer || "-");
+    setText(root, "ringbackMs", formatMs(payload.metrics?.ringbackTotalMs));
+    setText(root, "speechMs", formatMs(payload.metrics?.totalSpeechMs));
+    setText(root, "longestSpeechMs", formatMs(payload.metrics?.longestSpeechMs));
+    setText(root, "silenceAfterSpeechMs", formatMs(payload.metrics?.silenceAfterSpeechMs));
+    setText(root, "beepDetected", payload.metrics?.beepDetected ? "yes" : "no");
+    setText(root, "busyDetected", payload.metrics?.busyDetected ? "yes" : "no");
+    setText(root, "voicemailPhraseDetected", payload.metrics?.voicemailPhraseDetected ? "yes" : "no");
+    setText(root, "recommendedAction", payload.recommendedAction || "-");
     setText(root, "reason", payload.reason || "-");
 
-    setHtml(root, "signals", safeList(payload.dom.signals));
-    setHtml(root, "controls", safeList(payload.dom.controls?.slice(0, 20) || []));
+    setHtml(root, "signals", safeList(payload.signals));
+    setHtml(root, "controls", safeList(payload.controls?.slice(0, 20) || []));
     setHtml(root, "history", state.history.length ? state.history.map((item) => `
       <div class="history-item">
-        <strong>${escapeHtml(item.time)}</strong> - ${escapeHtml(item.finalState)}
+        <strong>${escapeHtml(item.time)}</strong> - ${escapeHtml(item.finalAmdState || item.finalState)}
         <br><span class="small">DOM: ${escapeHtml(item.domState)} | Audio: ${escapeHtml(item.audioState)} | ${Math.round((item.confidence || 0) * 100)}%</span>
       </div>
     `).join("") : "-");
+  }
+
+  function formatMs(value) {
+    const ms = Number(value || 0);
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    return `${(ms / 1000).toFixed(1)}s`;
   }
 
   function setText(root, id, value) {

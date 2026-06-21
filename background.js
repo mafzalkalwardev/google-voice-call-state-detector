@@ -5,6 +5,14 @@ const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
 let latestVoiceTabId = null;
 let audioRunning = false;
 
+async function safeStorageSet(values) {
+  try {
+    await chrome.storage.local.set(values);
+  } catch (err) {
+    // Storage can fail because of quota or transient extension-context issues.
+  }
+}
+
 async function getActiveVoiceTab() {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   const tab = tabs?.[0];
@@ -57,7 +65,7 @@ async function startTabAudioAnalysis() {
 
   audioRunning = true;
 
-  await chrome.storage.local.set({
+  await safeStorageSet({
     gvDetectorAudioRunning: true,
     gvDetectorLastError: null
   });
@@ -78,7 +86,7 @@ async function stopTabAudioAnalysis() {
 
   audioRunning = false;
 
-  await chrome.storage.local.set({
+  await safeStorageSet({
     gvDetectorAudioRunning: false
   });
 
@@ -105,12 +113,12 @@ async function sendToContent(tabId, message) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
-      if (message?.type === "START_AUDIO_FROM_POPUP") {
+      if (message?.type === "START_AUDIO_FROM_POPUP" || message?.type === "START_AUDIO_FROM_OVERLAY") {
         sendResponse(await startTabAudioAnalysis());
         return;
       }
 
-      if (message?.type === "STOP_AUDIO_FROM_POPUP") {
+      if (message?.type === "STOP_AUDIO_FROM_POPUP" || message?.type === "STOP_AUDIO_FROM_OVERLAY") {
         sendResponse(await stopTabAudioAnalysis());
         return;
       }
@@ -142,7 +150,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await sendToContent(latestVoiceTabId, payload);
         }
 
-        await chrome.storage.local.set({
+        await safeStorageSet({
           gvDetectorLatestAudio: payload
         });
 
@@ -153,7 +161,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, error: "Unknown message type." });
     } catch (err) {
       const error = err?.message || String(err);
-      await chrome.storage.local.set({ gvDetectorLastError: error });
+      await safeStorageSet({ gvDetectorLastError: error });
       sendResponse({ ok: false, error });
     }
   })();
@@ -165,7 +173,7 @@ chrome.tabCapture?.onStatusChanged?.addListener(async (info) => {
   if (info.status !== "stopped" && info.status !== "error") return;
 
   audioRunning = false;
-  await chrome.storage.local.set({ gvDetectorAudioRunning: false });
+  await safeStorageSet({ gvDetectorAudioRunning: false });
 
   if (latestVoiceTabId) {
     await sendToContent(latestVoiceTabId, {
