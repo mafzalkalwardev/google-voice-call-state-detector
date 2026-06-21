@@ -34,9 +34,12 @@ AMD_SAMPLE_RATE=16000
 AMD_NO_ANSWER_TIMEOUT_MS=30000
 AMD_HUMAN_MAX_GREETING_MS=3500
 AMD_VOICEMAIL_MIN_LONG_SPEECH_MS=5000
+AMD_DEBUG=false
 ```
 
 Backward-compatible reads exist for older names like `Deepgram_API_KEY` and `OpenAI_api_key`, but the correct names are `DEEPGRAM_API_KEY` and `OPENAI_API_KEY`.
+
+Set `AMD_DEBUG=true` only for temporary local debugging. Logs are sanitized and must never include API keys.
 
 ## Setup
 

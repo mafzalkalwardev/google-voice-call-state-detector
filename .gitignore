@@ -4,6 +4,7 @@ backend/.env
 *.log
 __pycache__/
 **/__pycache__/
+**pycache**/
 *.py[cod]
 .venv/
 venv/

@@ -52,6 +52,7 @@ AMD_STT_PROVIDER=deepgram
 AMD_AI_PROVIDER=xai
 AMD_AI_ENABLED=true
 AMD_BACKEND_PORT=8787
+AMD_DEBUG=false
 ```
 
 Run:
@@ -88,9 +89,10 @@ The health endpoint returns boolean key status only.
 2. Keep the Google Voice tab active.
 3. Click `Start Audio` in the overlay or `Start Tab Audio Analysis` in the popup.
 4. The overlay should show:
-   - `Backend WS = yes`
-   - `Deepgram = yes` when the key is valid and the Deepgram socket connects
-   - RMS, peak, dominant frequency, ZCR, tone stability, and audio frame count
+- `Backend WS = yes`
+- `Deepgram = yes` when the key is valid and the Deepgram socket connects
+- `Deepgram error`, `Deepgram event`, and `Backend error` explain failures without exposing API keys
+- RMS, peak, dominant frequency, ZCR, tone stability, and audio frame count
    - last transcript text when Deepgram hears speech
 
 If the backend is off, the extension still runs local AMD and shows backend disconnected.
@@ -163,6 +165,8 @@ The generated samples are synthetic tones/text fixtures for calibration and regr
 ## Limitations
 
 AMD is heuristic and needs real-call tuning. Google Voice UI can change, browser tab capture can vary by device, and speech/transcript timing affects human-vs-voicemail confidence. The system is designed to expose enough live metrics to tune thresholds safely.
+
+Set `AMD_DEBUG=true` only when you need backend/offscreen debug logs. Debug output must never include API keys.
 
 ## Safety
 

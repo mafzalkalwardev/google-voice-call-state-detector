@@ -21,9 +21,32 @@ app = FastAPI(title="Google Voice AMD Backend")
 
 def env_int(name: str, default: int) -> int:
     try:
-      return int(os.getenv(name, str(default)))
+        return int(os.getenv(name, str(default)))
     except ValueError:
-      return default
+        return default
+
+
+def env_debug() -> bool:
+    return env_bool("AMD_DEBUG", False)
+
+
+def debug_log(*parts):
+    if env_debug():
+        print("[GV AMD backend]", *parts)
+
+
+def safe_error(exc: Exception) -> str:
+    text = str(exc) or exc.__class__.__name__
+    for value in [
+        os.getenv("DEEPGRAM_API_KEY", ""),
+        os.getenv("Deepgram_API_KEY", ""),
+        os.getenv("XAI_API_KEY", ""),
+        os.getenv("OPENAI_API_KEY", ""),
+        os.getenv("OpenAI_api_key", ""),
+    ]:
+        if value:
+            text = text.replace(value, "[redacted]")
+    return text[:240]
 
 
 @app.get("/health")
@@ -75,12 +98,16 @@ async def amd_audio_ws(websocket: WebSocket):
         else:
             try:
                 deepgram_ok, reason = await bridge.connect()
-            except Exception:
-                deepgram_ok, reason = False, "Deepgram connection failed"
+            except Exception as exc:
+                deepgram_ok = False
+                reason = safe_error(exc)
+                debug_log("Deepgram connection failed:", reason)
 
             await send_json(backend_update(
                 reason=reason,
                 deepgram_connected=deepgram_ok,
+                deepgram_error="" if deepgram_ok else reason,
+                deepgram_last_event="connect_ok" if deepgram_ok else "connect_error",
             ))
 
         async def browser_to_deepgram():
@@ -97,11 +124,28 @@ async def amd_audio_ws(websocket: WebSocket):
 
         async def deepgram_to_browser():
             while deepgram_ok:
-                data = await bridge.recv()
+                try:
+                    data = await bridge.recv()
+                except Exception as exc:
+                    error = safe_error(exc)
+                    debug_log("Deepgram receive failed:", error)
+                    await send_json(backend_update(
+                        reason="Deepgram receive failed.",
+                        deepgram_connected=False,
+                        deepgram_error=error,
+                        deepgram_last_event="receive_error",
+                    ))
+                    break
                 if not data:
                     continue
                 transcript, is_final = extract_transcript(data)
+                event_name = data.get("type") or ("transcript_final" if is_final else "transcript_partial")
                 if not transcript:
+                    await send_json(backend_update(
+                        reason="Deepgram event received without transcript.",
+                        deepgram_connected=True,
+                        deepgram_last_event=event_name,
+                    ))
                     continue
 
                 nonlocal partial_transcript
@@ -119,6 +163,7 @@ async def amd_audio_ws(websocket: WebSocket):
                     partial=partial_transcript,
                     classifier=classifier,
                     deepgram_connected=True,
+                    deepgram_last_event=event_name,
                 ))
 
         tasks = [asyncio.create_task(browser_to_deepgram())]
@@ -132,11 +177,14 @@ async def amd_audio_ws(websocket: WebSocket):
             task.result()
     except WebSocketDisconnect:
         pass
-    except Exception:
+    except Exception as exc:
+        error = safe_error(exc)
+        debug_log("Backend websocket error:", error)
         try:
             await send_json(backend_update(
                 reason="Backend audio websocket error.",
                 deepgram_connected=False,
+                backend_last_error=error,
             ))
         except Exception:
             pass

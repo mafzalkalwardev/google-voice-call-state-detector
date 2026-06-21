@@ -89,7 +89,17 @@ def classify_transcript_rules(text: str):
     }
 
 
-def backend_update(transcript="", partial="", classifier=None, deepgram_connected=False, reason=""):
+def backend_update(
+    transcript="",
+    partial="",
+    classifier=None,
+    deepgram_connected=False,
+    reason="",
+    backend_connected=True,
+    deepgram_error="",
+    deepgram_last_event="",
+    backend_last_error="",
+):
     classifier = classifier or classify_transcript_rules(transcript or partial)
     voicemail_phrase_detected = bool(classifier.get("voicemailPhraseDetected"))
     final_state = "unknown"
@@ -114,5 +124,9 @@ def backend_update(transcript="", partial="", classifier=None, deepgram_connecte
         "confidence": classifier["confidence"],
         "reason": reason or classifier["reason"],
         "provider": classifier.get("provider", "rules"),
+        "backendConnected": backend_connected,
         "deepgramConnected": deepgram_connected,
+        "deepgramError": deepgram_error,
+        "deepgramLastEvent": deepgram_last_event,
+        "backendLastError": backend_last_error,
     }

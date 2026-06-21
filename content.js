@@ -24,6 +24,9 @@
     latestBackend: {
       backendConnected: false,
       deepgramConnected: false,
+      deepgramError: "",
+      deepgramLastEvent: "",
+      backendLastError: "",
       transcript: {
         partial: "",
         final: "",
@@ -41,6 +44,7 @@
 
   const OVERLAY_POSITION_KEY = "gvDetectorOverlayPosition";
   const NO_ANSWER_TIMEOUT_MS = 30000;
+  const AMD_VOICEMAIL_MIN_LONG_SPEECH_MS = 5000;
   const STRONG_AUDIO_STATES = new Set([
     "audio_ringback_like",
     "audio_speech_like",
@@ -114,6 +118,9 @@
       audioState: audio?.state || "audio_not_started",
       backendConnected: Boolean(state.latestBackend.backendConnected),
       deepgramConnected: Boolean(state.latestBackend.deepgramConnected),
+      deepgramError: state.latestBackend.deepgramError || "",
+      deepgramLastEvent: state.latestBackend.deepgramLastEvent || "",
+      backendLastError: state.latestBackend.backendLastError || "",
       finalAmdState: amd.finalAmdState,
       finalState: amd.finalAmdState,
       confidence: amd.confidence,
@@ -191,14 +198,6 @@
       hasAny(ariaLabels, ["play voicemail", "pause voicemail"]) ||
       bodyText.includes("transcript")
     );
-    const hasFailedText = [
-      "call failed",
-      "could not be completed",
-      "not available",
-      "unavailable",
-      "busy",
-      "try again later"
-    ].some((text) => bodyText.includes(text));
     const hasStrongActiveSignal = visible(outgoingOrActiveCall) ||
       hasOngoingText ||
       visible(inCallStatus) ||
@@ -229,10 +228,6 @@
       domState = "dialpad_ready";
       confidence = 0.78;
       reason = "Dialpad/search panel visible without strong active call controls.";
-    } else if (hasFailedText) {
-      domState = "unknown_transition";
-      confidence = 0.68;
-      reason = "Google Voice text suggests a failed or unavailable call.";
     } else if (hasNoActiveCall) {
       if (Date.now() - state.lastActiveAt < 4000) {
         domState = "ended";
@@ -369,6 +364,22 @@
     };
 
     const ts = Date.now();
+    if (audio.state === "audio_unknown" && isSpeechMetricActive(audio)) {
+      const upgraded = {
+        ...audio,
+        state: "audio_speech_like",
+        confidence: Math.max(0.58, audio.confidence || 0),
+        reason: "Speech-like duration and active audio metrics detected.",
+        upgradedFrom: "audio_unknown",
+        ts
+      };
+      state.lastStrongAudio = {
+        ...upgraded,
+        lastSeenAt: ts
+      };
+      return upgraded;
+    }
+
     if (STRONG_AUDIO_STATES.has(audio.state)) {
       state.lastStrongAudio = {
         ...audio,
@@ -404,6 +415,12 @@
     return audio;
   }
 
+  function isSpeechMetricActive(audio) {
+    if (!audio) return false;
+    return audio.speechLikeDurationMs >= 500 ||
+      (audio.rms > 0.012 && audio.peak > 0.035 && audio.zcr > 0.02 && !audio.tone);
+  }
+
   function updateAmdTimeline(dom, audio) {
     const ts = Date.now();
     const audioState = audio?.state || "audio_not_started";
@@ -427,7 +444,9 @@
       amdTimeline.ringbackLastAt = ts;
     }
 
-    if (audioState === "audio_speech_like") {
+    const speechLike = audioState === "audio_speech_like" || isSpeechMetricActive(audio);
+
+    if (speechLike) {
       amdTimeline.speechFirstAt ||= ts;
       amdTimeline.speechLastAt = ts;
       amdTimeline.silenceStartedAt = null;
@@ -458,7 +477,7 @@
       if (amdTimeline.speechLastAt) {
         amdTimeline.silenceAfterSpeechMs = ts - amdTimeline.speechLastAt;
       }
-    } else if (audioState !== "audio_speech_like") {
+    } else if (!speechLike) {
       amdTimeline.silenceStartedAt = null;
     }
 
@@ -466,7 +485,7 @@
       amdTimeline.beepDetectedAt ||= ts;
     }
 
-    if (audioState === "audio_busy_like" || detectFailedDomText()) {
+    if (audioState === "audio_busy_like" || detectStrongFailedDomText()) {
       amdTimeline.busyDetectedAt ||= ts;
     }
 
@@ -495,16 +514,34 @@
     }
   }
 
-  function detectFailedDomText() {
-    const text = normalizeText(document.body?.innerText || "");
+  function detectStrongFailedDomText() {
+    const statusText = getActiveCallStatusText();
     return [
       "call failed",
       "could not be completed",
-      "not available",
-      "unavailable",
-      "busy",
-      "try again later"
-    ].some((phrase) => text.includes(phrase));
+      "call could not be completed",
+      "line busy",
+      "busy signal",
+      "call busy",
+      "disconnected",
+      "call disconnected"
+    ].some((phrase) => statusText.includes(phrase));
+  }
+
+  function getActiveCallStatusText() {
+    const selectors = [
+      SELECTORS.activeCallWrapper,
+      SELECTORS.inCallStatus,
+      "[role='alert']",
+      "[aria-live='assertive']",
+      "[aria-live='polite']"
+    ];
+
+    return selectors
+      .flatMap((selector) => [...document.querySelectorAll(selector)])
+      .filter(visible)
+      .map((el) => normalizeText(el.textContent || el.getAttribute("aria-label") || ""))
+      .join(" ");
   }
 
   function estimateTotalSpeechMs(ts) {
@@ -519,7 +556,8 @@
     const hasSpeech = Boolean(amdTimeline.speechFirstAt);
     const shortSpeech = amdTimeline.longestSpeechMs >= 300 && amdTimeline.longestSpeechMs <= 3500;
     const shortPauseAfterSpeech = amdTimeline.silenceAfterSpeechMs >= 500 && amdTimeline.silenceAfterSpeechMs <= 2500;
-    const longGreeting = amdTimeline.longestSpeechMs >= 4500 || amdTimeline.totalSpeechMs >= 6000;
+    const longGreeting = amdTimeline.longestSpeechMs >= AMD_VOICEMAIL_MIN_LONG_SPEECH_MS ||
+      amdTimeline.totalSpeechMs >= AMD_VOICEMAIL_MIN_LONG_SPEECH_MS;
     const ringbackBeforeSpeech = Boolean(amdTimeline.ringbackFirstAt && amdTimeline.speechFirstAt && amdTimeline.ringbackFirstAt < amdTimeline.speechFirstAt);
 
     if (dom.domState === "ended" || (dom.domState === "idle" && amdTimeline.activeCallStartedAt)) {
@@ -535,14 +573,6 @@
         finalAmdState: "voicemail_detected",
         confidence: 0.88,
         reason: "Google Voice voicemail player or inbox markers are visible."
-      };
-    }
-
-    if (amdTimeline.busyDetectedAt) {
-      return {
-        finalAmdState: "busy_or_failed",
-        confidence: audioState === "audio_busy_like" ? 0.78 : 0.65,
-        reason: audioState === "audio_busy_like" ? "Busy-tone-like audio cadence detected." : "Google Voice failure or unavailable text detected."
       };
     }
 
@@ -573,8 +603,8 @@
     if (dom.domState === "active_call_ui" && longGreeting) {
       return {
         finalAmdState: "voicemail_detected",
-        confidence: 0.78,
-        reason: "Long continuous or repeated speech suggests voicemail greeting."
+        confidence: 0.8,
+        reason: "Long continuous speech exceeded voicemail long-speech threshold."
       };
     }
 
@@ -616,6 +646,14 @@
         finalAmdState: "still_ringing",
         confidence: Math.min(0.85, 0.65 + (amdTimeline.ringbackTotalMs / 60000)),
         reason: "Active call UI with repeated ringback-like audio and no speech or beep yet."
+      };
+    }
+
+    if (amdTimeline.busyDetectedAt) {
+      return {
+        finalAmdState: "busy_or_failed",
+        confidence: audioState === "audio_busy_like" ? 0.78 : 0.68,
+        reason: audioState === "audio_busy_like" ? "Busy-tone-like audio cadence detected." : "Visible active call status indicates failed, busy, or disconnected call."
       };
     }
 
@@ -707,6 +745,9 @@
         audioState: payload.audioState,
         backendConnected: payload.backendConnected,
         deepgramConnected: payload.deepgramConnected,
+        deepgramError: payload.deepgramError,
+        deepgramLastEvent: payload.deepgramLastEvent,
+        backendLastError: payload.backendLastError,
         finalAmdState: payload.finalAmdState,
         confidence: payload.confidence,
         recommendedAction: payload.recommendedAction,
@@ -1019,6 +1060,9 @@
         <div class="row"><span class="key">Audio</span><span class="val" id="audioState">-</span></div>
         <div class="row"><span class="key">Backend WS</span><span class="val" id="backendConnected">-</span></div>
         <div class="row"><span class="key">Deepgram</span><span class="val" id="deepgramConnected">-</span></div>
+        <div class="row"><span class="key">Deepgram event</span><span class="val" id="deepgramLastEvent">-</span></div>
+        <div class="row"><span class="key">Deepgram error</span><span class="val" id="deepgramError">-</span></div>
+        <div class="row"><span class="key">Backend error</span><span class="val" id="backendLastError">-</span></div>
         <div class="row"><span class="key">Final AMD</span><span class="val" id="amdState">-</span></div>
         <div class="row"><span class="key">Confidence</span><span class="val" id="confidence">-</span></div>
         <div class="row"><span class="key">Number</span><span class="val" id="number">-</span></div>
@@ -1235,6 +1279,9 @@
     setText(root, "audioState", payload.audioState);
     setText(root, "backendConnected", payload.backendConnected ? "yes" : "no");
     setText(root, "deepgramConnected", payload.deepgramConnected ? "yes" : "no");
+    setText(root, "deepgramLastEvent", payload.deepgramLastEvent || "-");
+    setText(root, "deepgramError", payload.deepgramError || "-");
+    setText(root, "backendLastError", payload.backendLastError || "-");
     setText(root, "amdState", payload.finalAmdState);
     setText(root, "confidence", `${Math.round((payload.confidence || 0) * 100)}%`);
     setText(root, "number", payload.number || "-");
@@ -1344,6 +1391,9 @@
     state.latestBackend = {
       backendConnected,
       deepgramConnected,
+      deepgramError: update.deepgramError || "",
+      deepgramLastEvent: update.deepgramLastEvent || update.type || "",
+      backendLastError: update.backendLastError || (update.type === "backend_ws_error" ? update.reason : ""),
       transcript: {
         partial,
         final: finalText,

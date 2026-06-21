@@ -20,6 +20,7 @@ const audioMemory = {
 const BACKEND_WS_URL = "ws://127.0.0.1:8787/ws/amd-audio";
 const TARGET_SAMPLE_RATE = 16000;
 const PCM_CHUNK_SAMPLES = 3200;
+const AMD_DEBUG = localStorage.getItem("AMD_DEBUG") === "true";
 
 const STRONG_AUDIO_STATES = new Set([
   "audio_ringback_like",
@@ -46,6 +47,10 @@ function safeSendBackend(update) {
     type: "BACKEND_AMD_UPDATE",
     backend: update
   }).catch(() => {});
+}
+
+function debugLog(...args) {
+  if (AMD_DEBUG) console.log("[GV AMD offscreen]", ...args);
 }
 
 async function startTabAudio(streamId) {
@@ -174,6 +179,7 @@ function connectBackendWebSocket() {
     backendSocket.binaryType = "arraybuffer";
 
     backendSocket.onopen = () => {
+      debugLog("backend websocket connected");
       safeSendBackend({
         type: "backend_ws_connected",
         backendConnected: true,
@@ -204,6 +210,7 @@ function connectBackendWebSocket() {
     };
 
     backendSocket.onerror = () => {
+      debugLog("backend websocket error");
       safeSendBackend({
         type: "backend_ws_error",
         backendConnected: false,
@@ -214,6 +221,7 @@ function connectBackendWebSocket() {
     };
 
     backendSocket.onclose = () => {
+      debugLog("backend websocket disconnected");
       safeSendBackend({
         type: "backend_ws_disconnected",
         backendConnected: false,
@@ -300,7 +308,10 @@ function analyzeAudioFrame() {
     frame.toneStability > 0.18 &&
     frame.dominantFrequency > 350 &&
     frame.dominantFrequency < 1800;
-  frame.speechActivity = frame.rms > 0.014 && frame.zcr > 0.032;
+  frame.speechActivity = frame.rms > 0.014 &&
+    frame.zcr > 0.02 &&
+    frame.toneStability < 0.18 &&
+    !frame.beep;
 
   audioMemory.frames.push(frame);
   audioMemory.frames = audioMemory.frames.filter((item) => now() - item.ts <= 8000);
@@ -395,13 +406,17 @@ function classifyAudio(frames) {
     longSilent.length >= 4 &&
     toneFrames >= Math.max(2, recent.length * 0.3) &&
     rmsVariance > 0.00002;
+  const sustainedSpeechLike = speechFrames >= Math.max(2, recent.length * 0.3) ||
+    durationOfRecent(frames, (frame) => frame.speechActivity) >= 500 ||
+    (rmsAvg > 0.012 && peakAvg > 0.035 && zcrAvg > 0.02 && freqVariance > 5000 && toneAvg < 0.22);
   const busyTonePattern = longer.length >= 12 &&
     longLoud.length >= 5 &&
     longSilent.length >= 3 &&
-    toneAvg > 0.12 &&
+    toneAvg > 0.15 &&
     freqAvg > 300 &&
     freqAvg < 700 &&
-    freqVariance < 16000;
+    freqVariance < 8000 &&
+    speechFrames < Math.max(2, recent.length * 0.25);
 
   const metrics = {
     rms: rmsAvg,
@@ -411,7 +426,7 @@ function classifyAudio(frames) {
     toneStability: toneAvg,
     frequencyVariance: freqVariance,
     rmsVariance,
-    speechActivity: speechFrames >= Math.max(3, recent.length * 0.45),
+    speechActivity: sustainedSpeechLike,
     silence: silentFrames >= Math.max(4, recent.length * 0.75),
     tone: toneFrames >= Math.max(2, recent.length * 0.35),
     beep: beepFrames >= 2,
@@ -444,6 +459,16 @@ function classifyAudio(frames) {
     };
   }
 
+  if (sustainedSpeechLike) {
+    return {
+      state: "audio_speech_like",
+      confidence: 0.66,
+      ...metrics,
+      reason: "Sustained speech-like audio metrics detected.",
+      ts
+    };
+  }
+
   if (busyTonePattern) {
     return {
       state: "audio_busy_like",
@@ -460,16 +485,6 @@ function classifyAudio(frames) {
       confidence: 0.65,
       ...metrics,
       reason: "Repeating tone/silence pattern detected. Could be outbound ringing.",
-      ts
-    };
-  }
-
-  if (loudFrames >= Math.max(3, recent.length * 0.45) && rmsAvg > 0.014 && freqVariance > 16000 && zcrAvg > 0.035) {
-    return {
-      state: "audio_speech_like",
-      confidence: 0.68,
-      ...metrics,
-      reason: "Irregular audio pattern detected. Could be human or voicemail greeting speech.",
       ts
     };
   }
