@@ -5,12 +5,21 @@ let mediaStream = null;
 let analyser = null;
 let source = null;
 let intervalId = null;
+let processor = null;
+let silentSink = null;
+let backendSocket = null;
+let pcmBuffer = [];
+let audioFrameCount = 0;
 
 const audioMemory = {
   frames: [],
   lastSent: 0,
   lastStrongState: null
 };
+
+const BACKEND_WS_URL = "ws://127.0.0.1:8787/ws/amd-audio";
+const TARGET_SAMPLE_RATE = 16000;
+const PCM_CHUNK_SAMPLES = 3200;
 
 const STRONG_AUDIO_STATES = new Set([
   "audio_ringback_like",
@@ -28,6 +37,14 @@ function safeSendAudio(audio) {
     target: "background",
     type: "AUDIO_STATE_UPDATE",
     audio
+  }).catch(() => {});
+}
+
+function safeSendBackend(update) {
+  chrome.runtime.sendMessage({
+    target: "background",
+    type: "BACKEND_AMD_UPDATE",
+    backend: update
   }).catch(() => {});
 }
 
@@ -55,6 +72,8 @@ async function startTabAudio(streamId) {
 
   // Keep the captured Google Voice tab audible to the user.
   source.connect(audioContext.destination);
+  setupPcmStreaming();
+  connectBackendWebSocket();
 
   intervalId = setInterval(analyzeAudioFrame, 250);
 
@@ -64,6 +83,8 @@ async function startTabAudio(streamId) {
     rms: 0,
     peak: 0,
     dominantFrequency: 0,
+    audioFrameCount,
+    backendConnected: false,
     reason: "Tab audio analysis started.",
     ts: now()
   });
@@ -81,9 +102,22 @@ async function stopTabAudio(options = {}) {
     }
   }
 
+  closeBackendWebSocket("stopped");
+
+  if (processor) {
+    processor.disconnect();
+  }
+  if (silentSink) {
+    silentSink.disconnect();
+  }
+
   mediaStream = null;
   analyser = null;
   source = null;
+  processor = null;
+  silentSink = null;
+  pcmBuffer = [];
+  audioFrameCount = 0;
 
   if (audioContext) {
     await audioContext.close().catch(() => {});
@@ -99,10 +133,146 @@ async function stopTabAudio(options = {}) {
       rms: 0,
       peak: 0,
       dominantFrequency: 0,
+      audioFrameCount,
+      backendConnected: false,
       reason: "Tab audio analysis stopped.",
       ts: now()
     });
   }
+}
+
+function setupPcmStreaming() {
+  if (!audioContext || !source) return;
+
+  processor = audioContext.createScriptProcessor(4096, 1, 1);
+  silentSink = audioContext.createGain();
+  silentSink.gain.value = 0;
+
+  processor.onaudioprocess = (event) => {
+    const input = event.inputBuffer.getChannelData(0);
+    const downsampled = downsampleTo16k(input, audioContext.sampleRate);
+    for (const sample of downsampled) {
+      pcmBuffer.push(floatToInt16(sample));
+    }
+
+    while (pcmBuffer.length >= PCM_CHUNK_SAMPLES) {
+      const chunk = pcmBuffer.splice(0, PCM_CHUNK_SAMPLES);
+      sendPcmChunk(new Int16Array(chunk));
+    }
+  };
+
+  source.connect(processor);
+  processor.connect(silentSink);
+  silentSink.connect(audioContext.destination);
+}
+
+function connectBackendWebSocket() {
+  closeBackendWebSocket("reconnecting");
+
+  try {
+    backendSocket = new WebSocket(BACKEND_WS_URL);
+    backendSocket.binaryType = "arraybuffer";
+
+    backendSocket.onopen = () => {
+      safeSendBackend({
+        type: "backend_ws_connected",
+        backendConnected: true,
+        deepgramConnected: false,
+        reason: "Backend WebSocket connected.",
+        ts: now()
+      });
+      backendSocket.send(JSON.stringify({
+        type: "start",
+        sampleRate: TARGET_SAMPLE_RATE,
+        encoding: "linear16",
+        channels: 1
+      }));
+    };
+
+    backendSocket.onmessage = (event) => {
+      try {
+        safeSendBackend(JSON.parse(event.data));
+      } catch (err) {
+        safeSendBackend({
+          type: "backend_ws_error",
+          backendConnected: true,
+          deepgramConnected: false,
+          reason: "Backend sent non-JSON message.",
+          ts: now()
+        });
+      }
+    };
+
+    backendSocket.onerror = () => {
+      safeSendBackend({
+        type: "backend_ws_error",
+        backendConnected: false,
+        deepgramConnected: false,
+        reason: "Backend not connected. Local AMD only.",
+        ts: now()
+      });
+    };
+
+    backendSocket.onclose = () => {
+      safeSendBackend({
+        type: "backend_ws_disconnected",
+        backendConnected: false,
+        deepgramConnected: false,
+        reason: "Backend WebSocket disconnected. Local AMD only.",
+        ts: now()
+      });
+    };
+  } catch (err) {
+    safeSendBackend({
+      type: "backend_ws_error",
+      backendConnected: false,
+      deepgramConnected: false,
+      reason: "Backend WebSocket could not be opened. Local AMD only.",
+      ts: now()
+    });
+  }
+}
+
+function closeBackendWebSocket(reason) {
+  if (!backendSocket) return;
+  try {
+    backendSocket.close(1000, reason || "closed");
+  } catch (err) {
+    // Ignore close errors from already-closed sockets.
+  }
+  backendSocket = null;
+}
+
+function sendPcmChunk(int16Chunk) {
+  audioFrameCount += 1;
+  if (!backendSocket || backendSocket.readyState !== WebSocket.OPEN) return;
+  backendSocket.send(int16Chunk.buffer);
+}
+
+function downsampleTo16k(input, sourceSampleRate) {
+  if (sourceSampleRate === TARGET_SAMPLE_RATE) return input;
+  const ratio = sourceSampleRate / TARGET_SAMPLE_RATE;
+  const outputLength = Math.floor(input.length / ratio);
+  const output = new Float32Array(outputLength);
+
+  for (let i = 0; i < outputLength; i += 1) {
+    const start = Math.floor(i * ratio);
+    const end = Math.min(Math.floor((i + 1) * ratio), input.length);
+    let sum = 0;
+    let count = 0;
+    for (let j = start; j < end; j += 1) {
+      sum += input[j];
+      count += 1;
+    }
+    output[i] = count ? sum / count : 0;
+  }
+
+  return output;
+}
+
+function floatToInt16(sample) {
+  const clamped = Math.max(-1, Math.min(1, sample));
+  return clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
 }
 
 function analyzeAudioFrame() {
@@ -122,6 +292,7 @@ function analyzeAudioFrame() {
     dominantFrequency: calculateDominantFrequency(freqData, audioContext.sampleRate, analyser.fftSize),
     toneStability: calculateToneStability(freqData)
   };
+  audioFrameCount += 1;
 
   frame.silence = frame.rms < 0.008;
   frame.tone = frame.rms > 0.014 && frame.toneStability > 0.08;
@@ -245,7 +416,12 @@ function classifyAudio(frames) {
     tone: toneFrames >= Math.max(2, recent.length * 0.35),
     beep: beepFrames >= 2,
     ringbackPattern,
-    busyTonePattern
+    busyTonePattern,
+    silenceDurationMs: durationOfRecent(frames, (frame) => frame.silence),
+    toneDurationMs: durationOfRecent(frames, (frame) => frame.tone),
+    speechLikeDurationMs: durationOfRecent(frames, (frame) => frame.speechActivity),
+    audioFrameCount,
+    backendConnected: backendSocket?.readyState === WebSocket.OPEN
   };
 
   if (metrics.silence) {
@@ -357,6 +533,18 @@ function variance(values) {
   if (!values.length) return 0;
   const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
   return values.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / values.length;
+}
+
+function durationOfRecent(frames, predicate) {
+  const matching = [...frames].reverse().filter(predicate);
+  if (!matching.length) return 0;
+  const newest = matching[0].ts;
+  let oldest = newest;
+  for (const frame of matching) {
+    if (newest - frame.ts > 8000) break;
+    oldest = frame.ts;
+  }
+  return newest - oldest;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

@@ -1,144 +1,152 @@
-import json
+import asyncio
 import os
-from typing import Literal
 
-import httpx
-from fastapi import FastAPI
+from dotenv import load_dotenv
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
-try:
-    from dotenv import load_dotenv
-except ImportError:  # pragma: no cover
-    load_dotenv = None
+from amd_decision import backend_update, classify_transcript_rules
+from deepgram_live import DeepgramBridge, extract_transcript, get_deepgram_key
+from llm_classifier import classify_transcript, env_bool, get_env_any
 
-if load_dotenv:
-    load_dotenv()
-
-Classification = Literal["human_greeting", "voicemail_greeting", "unknown"]
+load_dotenv()
 
 
 class TranscriptRequest(BaseModel):
     transcript: str = Field(default="", max_length=2000)
 
 
-class TranscriptResponse(BaseModel):
-    enabled: bool
-    keyConfigured: bool
-    classification: Classification
-    confidence: float
-    reason: str
+app = FastAPI(title="Google Voice AMD Backend")
 
 
-app = FastAPI(title="GV AMD Optional Transcript Classifier")
-
-
-def env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+def env_int(name: str, default: int) -> int:
+    try:
+      return int(os.getenv(name, str(default)))
+    except ValueError:
+      return default
 
 
 @app.get("/health")
 async def health():
     return {
         "ok": True,
-        "aiEnabled": env_bool("AMD_AI_ENABLED", False),
-        "xaiKeyConfigured": bool(os.getenv("XAI_API_KEY")),
+        "deepgram_key_found": bool(get_deepgram_key()),
+        "xai_key_found": bool(get_env_any("XAI_API_KEY")),
+        "openai_key_found": bool(get_env_any("OPENAI_API_KEY", "OpenAI_api_key", "OPENAI_api_key")),
+        "ai_enabled": env_bool("AMD_AI_ENABLED", False),
+        "stt_provider": os.getenv("AMD_STT_PROVIDER", "deepgram"),
     }
 
 
-@app.post("/classify-transcript", response_model=TranscriptResponse)
-async def classify_transcript(payload: TranscriptRequest):
-    enabled = env_bool("AMD_AI_ENABLED", False)
-    api_key = os.getenv("XAI_API_KEY")
-    key_configured = bool(api_key)
-
-    if not enabled or not key_configured:
-        return TranscriptResponse(
-            enabled=enabled,
-            keyConfigured=key_configured,
-            classification="unknown",
-            confidence=0.0,
-            reason="AI transcript classification is disabled or no API key is configured.",
-        )
-
+@app.post("/classify-transcript")
+async def classify_transcript_endpoint(payload: TranscriptRequest):
     transcript = payload.transcript.strip()
-    if not transcript:
-        return TranscriptResponse(
-            enabled=enabled,
-            keyConfigured=key_configured,
-            classification="unknown",
-            confidence=0.0,
-            reason="No transcript text supplied.",
-        )
-
-    base_url = os.getenv("AMD_AI_BASE_URL", "https://api.x.ai").rstrip("/")
-    model = os.getenv("AMD_AI_MODEL", "grok-4.3")
-    url = f"{base_url}/v1/chat/completions"
-
-    system_prompt = (
-        "Classify a short call transcript for answering machine detection. "
-        "Return JSON only with classification, confidence, and reason. "
-        "classification must be human_greeting, voicemail_greeting, or unknown."
-    )
-
-    request_body = {
-        "model": model,
-        "temperature": 0,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": transcript},
-        ],
-        "response_format": {"type": "json_object"},
+    rules = classify_transcript_rules(transcript)
+    result = rules if rules["classification"] != "unknown" else await classify_transcript(transcript)
+    return {
+        "classification": result["classification"],
+        "confidence": result["confidence"],
+        "reason": result["reason"],
+        "provider": result.get("provider", "rules"),
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.post(
-                url,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=request_body,
-            )
-            response.raise_for_status()
-            data = response.json()
-    except Exception:
-        return TranscriptResponse(
-            enabled=enabled,
-            keyConfigured=key_configured,
-            classification="unknown",
-            confidence=0.0,
-            reason="AI provider request failed.",
-        )
+
+@app.websocket("/ws/amd-audio")
+async def amd_audio_ws(websocket: WebSocket):
+    await websocket.accept()
+
+    sample_rate = env_int("AMD_SAMPLE_RATE", 16000)
+    bridge = DeepgramBridge(sample_rate=sample_rate)
+    deepgram_ok = False
+    final_transcript_parts = []
+    partial_transcript = ""
+    send_lock = asyncio.Lock()
+
+    async def send_json(payload: dict):
+        async with send_lock:
+            await websocket.send_json(payload)
 
     try:
-        content = data["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
-        classification = parsed.get("classification", "unknown")
-        if classification not in {"human_greeting", "voicemail_greeting", "unknown"}:
-            classification = "unknown"
-        confidence = float(parsed.get("confidence", 0.0))
-        reason = str(parsed.get("reason", "AI classified transcript."))
+        if os.getenv("AMD_STT_PROVIDER", "deepgram").lower() != "deepgram":
+            await send_json(backend_update(
+                reason="Only AMD_STT_PROVIDER=deepgram is implemented.",
+                deepgram_connected=False,
+            ))
+        else:
+            try:
+                deepgram_ok, reason = await bridge.connect()
+            except Exception:
+                deepgram_ok, reason = False, "Deepgram connection failed"
+
+            await send_json(backend_update(
+                reason=reason,
+                deepgram_connected=deepgram_ok,
+            ))
+
+        async def browser_to_deepgram():
+            while True:
+                message = await websocket.receive()
+                if "bytes" in message and message["bytes"]:
+                    if deepgram_ok:
+                        await bridge.send_audio(message["bytes"])
+                elif "text" in message and message["text"]:
+                    # Control messages are accepted for future tuning; no secrets are expected here.
+                    continue
+                elif message.get("type") == "websocket.disconnect":
+                    break
+
+        async def deepgram_to_browser():
+            while deepgram_ok:
+                data = await bridge.recv()
+                if not data:
+                    continue
+                transcript, is_final = extract_transcript(data)
+                if not transcript:
+                    continue
+
+                nonlocal partial_transcript
+                if is_final:
+                    final_transcript_parts.append(transcript)
+                    partial_transcript = ""
+                else:
+                    partial_transcript = transcript
+
+                full_transcript = " ".join(final_transcript_parts).strip()
+                classifier_input = full_transcript or partial_transcript
+                classifier = await classify_transcript(classifier_input)
+                await send_json(backend_update(
+                    transcript=full_transcript,
+                    partial=partial_transcript,
+                    classifier=classifier,
+                    deepgram_connected=True,
+                ))
+
+        tasks = [asyncio.create_task(browser_to_deepgram())]
+        if deepgram_ok:
+            tasks.append(asyncio.create_task(deepgram_to_browser()))
+
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        for task in done:
+            task.result()
+    except WebSocketDisconnect:
+        pass
     except Exception:
-        return TranscriptResponse(
-            enabled=enabled,
-            keyConfigured=key_configured,
-            classification="unknown",
-            confidence=0.0,
-            reason="AI provider returned non-JSON or unexpected JSON.",
-        )
-
-    return TranscriptResponse(
-        enabled=enabled,
-        keyConfigured=key_configured,
-        classification=classification,
-        confidence=max(0.0, min(1.0, confidence)),
-        reason=reason[:240],
-    )
+        try:
+            await send_json(backend_update(
+                reason="Backend audio websocket error.",
+                deepgram_connected=False,
+            ))
+        except Exception:
+            pass
+    finally:
+        await bridge.close()
 
 
-# TODO: Future STT integration can add a WebSocket /audio-stream endpoint.
-# Keep raw audio local/ephemeral unless the user explicitly enables streaming.
+if __name__ == "__main__":
+    import uvicorn
+
+    host = os.getenv("AMD_BACKEND_HOST", "127.0.0.1")
+    port = env_int("AMD_BACKEND_PORT", 8787)
+    uvicorn.run("app:app", host=host, port=port, reload=True)

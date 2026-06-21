@@ -158,6 +158,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
+      if (message?.target === "background" && message?.type === "BACKEND_AMD_UPDATE") {
+        const payload = {
+          type: "GV_BACKEND_AMD_UPDATE",
+          backend: message.backend,
+          ts: Date.now()
+        };
+
+        if (latestVoiceTabId) {
+          await sendToContent(latestVoiceTabId, payload);
+        }
+
+        await safeStorageSet({
+          gvDetectorLatestBackend: payload
+        });
+
+        sendResponse({ ok: true });
+        return;
+      }
+
       sendResponse({ ok: false, error: "Unknown message type." });
     } catch (err) {
       const error = err?.message || String(err);

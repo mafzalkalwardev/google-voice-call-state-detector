@@ -1,8 +1,13 @@
 .env
 backend/.env
 *.env
+*.log
 __pycache__/
+**/__pycache__/
 *.py[cod]
 .venv/
 venv/
 node_modules/
+*.wav
+*.mp3
+debug-recordings/

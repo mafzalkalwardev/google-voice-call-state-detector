@@ -21,6 +21,19 @@
     lastActiveAt: 0,
     lastSummarySavedAt: 0,
     latestAudio: null,
+    latestBackend: {
+      backendConnected: false,
+      deepgramConnected: false,
+      transcript: {
+        partial: "",
+        final: "",
+        lastText: ""
+      },
+      voicemailPhraseDetected: false,
+      classification: "unknown",
+      confidence: 0,
+      reason: "Backend not connected. Local AMD only."
+    },
     history: [],
     lastPayload: null,
     lastDomScan: 0
@@ -99,11 +112,14 @@
       timer: dom.timer || dom.elapsedA11y,
       domState: dom.domState,
       audioState: audio?.state || "audio_not_started",
+      backendConnected: Boolean(state.latestBackend.backendConnected),
+      deepgramConnected: Boolean(state.latestBackend.deepgramConnected),
       finalAmdState: amd.finalAmdState,
       finalState: amd.finalAmdState,
       confidence: amd.confidence,
       recommendedAction: getRecommendedAction(amd.finalAmdState),
       reason: amd.reason,
+      transcript: state.latestBackend.transcript,
       metrics: getAmdMetrics(),
       signals: dom.signals,
       controls: dom.controls,
@@ -463,12 +479,19 @@
   }
 
   function updateTranscriptEvidence(dom) {
-    const text = normalizeText(document.body?.innerText || "");
-    amdTimeline.lastTranscript = text.slice(0, 500);
+    const visibleText = normalizeText(document.body?.innerText || "");
+    const backendText = normalizeText(state.latestBackend.transcript?.lastText || "");
+    const text = `${visibleText} ${backendText}`.trim();
+    amdTimeline.lastTranscript = (state.latestBackend.transcript?.lastText || visibleText).slice(0, 500);
 
     if (!amdTimeline.voicemailPhraseDetectedAt && VOICEMAIL_PHRASES.some((phrase) => text.includes(phrase))) {
       amdTimeline.voicemailPhraseDetectedAt = Date.now();
       dom.signals.push("voicemail phrase detected");
+    }
+
+    if (!amdTimeline.voicemailPhraseDetectedAt && state.latestBackend.voicemailPhraseDetected) {
+      amdTimeline.voicemailPhraseDetectedAt = Date.now();
+      dom.signals.push("backend voicemail phrase detected");
     }
   }
 
@@ -523,6 +546,14 @@
       };
     }
 
+    if (state.latestBackend.classification === "voicemail_greeting" && state.latestBackend.confidence >= 0.75) {
+      return {
+        finalAmdState: "voicemail_detected",
+        confidence: Math.max(0.82, state.latestBackend.confidence),
+        reason: `Backend classified transcript as voicemail: ${state.latestBackend.reason}`
+      };
+    }
+
     if (amdTimeline.beepDetectedAt && hasSpeech) {
       return {
         finalAmdState: "voicemail_detected",
@@ -554,6 +585,21 @@
         reason: ringbackBeforeSpeech ?
           "Ringback was followed by a short speech greeting and a short pause with no voicemail evidence." :
           "Short speech greeting followed by a short pause with no voicemail evidence."
+      };
+    }
+
+    if (
+      dom.domState === "active_call_ui" &&
+      state.latestBackend.classification === "human_greeting" &&
+      state.latestBackend.confidence >= 0.68 &&
+      !amdTimeline.beepDetectedAt &&
+      !amdTimeline.voicemailPhraseDetectedAt &&
+      !longGreeting
+    ) {
+      return {
+        finalAmdState: "human_picked",
+        confidence: Math.max(0.72, state.latestBackend.confidence),
+        reason: `Backend classified transcript as a human greeting: ${state.latestBackend.reason}`
       };
     }
 
@@ -624,7 +670,18 @@
       silenceAfterSpeechMs: amdTimeline.silenceAfterSpeechMs,
       beepDetected: Boolean(amdTimeline.beepDetectedAt),
       busyDetected: Boolean(amdTimeline.busyDetectedAt),
-      voicemailPhraseDetected: Boolean(amdTimeline.voicemailPhraseDetectedAt)
+      voicemailPhraseDetected: Boolean(amdTimeline.voicemailPhraseDetectedAt),
+      rms: state.latestAudio?.rms || 0,
+      peak: state.latestAudio?.peak || 0,
+      zcr: state.latestAudio?.zcr || 0,
+      dominantFrequency: state.latestAudio?.dominantFrequency || 0,
+      toneStability: state.latestAudio?.toneStability || 0,
+      frequencyVariance: state.latestAudio?.frequencyVariance || 0,
+      rmsVariance: state.latestAudio?.rmsVariance || 0,
+      silenceDurationMs: state.latestAudio?.silenceDurationMs || 0,
+      toneDurationMs: state.latestAudio?.toneDurationMs || 0,
+      speechLikeDurationMs: state.latestAudio?.speechLikeDurationMs || 0,
+      audioFrameCount: state.latestAudio?.audioFrameCount || 0
     };
   }
 
@@ -648,10 +705,13 @@
         timer: payload.timer,
         domState: payload.domState,
         audioState: payload.audioState,
+        backendConnected: payload.backendConnected,
+        deepgramConnected: payload.deepgramConnected,
         finalAmdState: payload.finalAmdState,
         confidence: payload.confidence,
         recommendedAction: payload.recommendedAction,
         reason: payload.reason,
+        transcript: payload.transcript,
         metrics: payload.metrics
       }
     }).catch(() => {});
@@ -957,10 +1017,18 @@
       <div class="body">
         <div class="row"><span class="key">DOM session</span><span class="val" id="domState">-</span></div>
         <div class="row"><span class="key">Audio</span><span class="val" id="audioState">-</span></div>
+        <div class="row"><span class="key">Backend WS</span><span class="val" id="backendConnected">-</span></div>
+        <div class="row"><span class="key">Deepgram</span><span class="val" id="deepgramConnected">-</span></div>
         <div class="row"><span class="key">Final AMD</span><span class="val" id="amdState">-</span></div>
         <div class="row"><span class="key">Confidence</span><span class="val" id="confidence">-</span></div>
         <div class="row"><span class="key">Number</span><span class="val" id="number">-</span></div>
         <div class="row"><span class="key">Timer</span><span class="val" id="timer">-</span></div>
+        <div class="row"><span class="key">RMS</span><span class="val" id="rms">-</span></div>
+        <div class="row"><span class="key">Peak</span><span class="val" id="peak">-</span></div>
+        <div class="row"><span class="key">Dominant freq</span><span class="val" id="dominantFrequency">-</span></div>
+        <div class="row"><span class="key">Zero crossing</span><span class="val" id="zcr">-</span></div>
+        <div class="row"><span class="key">Tone stability</span><span class="val" id="toneStability">-</span></div>
+        <div class="row"><span class="key">Audio frames</span><span class="val" id="audioFrameCount">-</span></div>
         <div class="row"><span class="key">Ringback</span><span class="val" id="ringbackMs">-</span></div>
         <div class="row"><span class="key">Speech total</span><span class="val" id="speechMs">-</span></div>
         <div class="row"><span class="key">Longest speech</span><span class="val" id="longestSpeechMs">-</span></div>
@@ -968,6 +1036,7 @@
         <div class="row"><span class="key">Beep detected</span><span class="val" id="beepDetected">-</span></div>
         <div class="row"><span class="key">Busy detected</span><span class="val" id="busyDetected">-</span></div>
         <div class="row"><span class="key">Voicemail phrase</span><span class="val" id="voicemailPhraseDetected">-</span></div>
+        <div class="row"><span class="key">Last transcript</span><span class="val" id="lastTranscript">-</span></div>
         <div class="row"><span class="key">Recommended</span><span class="val" id="recommendedAction">-</span></div>
         <div class="row"><span class="key">Reason</span><span class="val" id="reason">-</span></div>
         <div class="small danger">AMD is heuristic. Audio is local and not recorded.</div>
@@ -1164,10 +1233,18 @@
     setText(root, "finalState", payload.finalAmdState);
     setText(root, "domState", payload.domState);
     setText(root, "audioState", payload.audioState);
+    setText(root, "backendConnected", payload.backendConnected ? "yes" : "no");
+    setText(root, "deepgramConnected", payload.deepgramConnected ? "yes" : "no");
     setText(root, "amdState", payload.finalAmdState);
     setText(root, "confidence", `${Math.round((payload.confidence || 0) * 100)}%`);
     setText(root, "number", payload.number || "-");
     setText(root, "timer", payload.timer || "-");
+    setText(root, "rms", formatNumber(payload.metrics?.rms, 5));
+    setText(root, "peak", formatNumber(payload.metrics?.peak, 5));
+    setText(root, "dominantFrequency", `${Math.round(payload.metrics?.dominantFrequency || 0)} Hz`);
+    setText(root, "zcr", formatNumber(payload.metrics?.zcr, 5));
+    setText(root, "toneStability", formatNumber(payload.metrics?.toneStability, 4));
+    setText(root, "audioFrameCount", String(payload.metrics?.audioFrameCount || 0));
     setText(root, "ringbackMs", formatMs(payload.metrics?.ringbackTotalMs));
     setText(root, "speechMs", formatMs(payload.metrics?.totalSpeechMs));
     setText(root, "longestSpeechMs", formatMs(payload.metrics?.longestSpeechMs));
@@ -1175,6 +1252,7 @@
     setText(root, "beepDetected", payload.metrics?.beepDetected ? "yes" : "no");
     setText(root, "busyDetected", payload.metrics?.busyDetected ? "yes" : "no");
     setText(root, "voicemailPhraseDetected", payload.metrics?.voicemailPhraseDetected ? "yes" : "no");
+    setText(root, "lastTranscript", payload.transcript?.lastText || "-");
     setText(root, "recommendedAction", payload.recommendedAction || "-");
     setText(root, "reason", payload.reason || "-");
 
@@ -1192,6 +1270,11 @@
     const ms = Number(value || 0);
     if (ms < 1000) return `${Math.round(ms)}ms`;
     return `${(ms / 1000).toFixed(1)}s`;
+  }
+
+  function formatNumber(value, digits) {
+    const number = Number(value || 0);
+    return number.toFixed(digits);
   }
 
   function setText(root, id, value) {
@@ -1233,6 +1316,11 @@
       updateState("audio");
     }
 
+    if (message?.type === "GV_BACKEND_AMD_UPDATE") {
+      applyBackendUpdate(message.backend);
+      updateState("backend");
+    }
+
     if (message?.type === "GV_AUDIO_CONTROL") {
       state.latestAudio = {
         state: message.status === "started" ? "audio_started" : "audio_stopped",
@@ -1243,6 +1331,32 @@
       updateState("audio-control");
     }
   });
+
+  function applyBackendUpdate(update) {
+    if (!update) return;
+
+    const backendConnected = update.backendConnected ?? update.type === "backend_amd_update";
+    const deepgramConnected = Boolean(update.deepgramConnected);
+    const partial = update.partialTranscript || state.latestBackend.transcript.partial || "";
+    const finalText = update.transcript || state.latestBackend.transcript.final || "";
+    const lastText = finalText || partial || state.latestBackend.transcript.lastText || "";
+
+    state.latestBackend = {
+      backendConnected,
+      deepgramConnected,
+      transcript: {
+        partial,
+        final: finalText,
+        lastText
+      },
+      voicemailPhraseDetected: Boolean(update.voicemailPhraseDetected),
+      classification: update.classification || state.latestBackend.classification || "unknown",
+      confidence: Number(update.confidence || 0),
+      reason: update.reason || state.latestBackend.reason || "",
+      provider: update.provider || state.latestBackend.provider || "rules",
+      raw: update
+    };
+  }
 
   init();
 })();

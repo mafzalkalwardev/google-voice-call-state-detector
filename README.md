@@ -1,8 +1,8 @@
-# Google Voice Real Call State Detector
+# Google Voice AMD Detector
 
-A Manifest V3 Chrome extension for Google Voice answering machine detection (AMD).
+A Manifest V3 Chrome extension plus optional FastAPI backend for live Google Voice answering machine detection.
 
-It runs on `https://voice.google.com/*`, confirms whether a call session is active from the DOM, and uses optional local tab-audio heuristics to classify:
+The detector classifies:
 
 - `still_ringing`
 - `human_picked`
@@ -12,145 +12,158 @@ It runs on `https://voice.google.com/*`, confirms whether a call session is acti
 - `ended`
 - `unknown`
 
-The extension does not record or save audio.
+DOM only confirms the Google Voice session state. Audio and transcript evidence decide human vs voicemail.
 
-## DOM Session States
+## Live Flow
 
-The DOM engine intentionally stays conservative:
+```text
+Google Voice call
+-> content.js DOM session detector
+-> Start Audio
+-> chrome.tabCapture
+-> offscreen.js local Web Audio metrics
+-> 16 kHz mono PCM Int16 WebSocket stream
+-> FastAPI /ws/amd-audio
+-> Deepgram live transcription
+-> voicemail phrase rules and optional xAI/OpenAI classifier
+-> GV_AMD_STATE_UPDATE
+```
 
-- `idle`
-- `dialpad_ready`
-- `incoming_ringing`
-- `active_call_ui`
-- `voicemail_player_or_inbox`
-- `ended`
-- `unknown_transition`
+No audio is recorded or saved by default.
 
-Google Voice can show the same active UI while an outbound call is ringing, answered by a person, or playing voicemail. DOM only confirms the session. Audio/AMD decides human vs voicemail.
+## Backend Setup
 
-## Audio States
+```powershell
+cd backend
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
 
-- `audio_not_started`
-- `audio_started`
-- `audio_silence`
-- `audio_ringback_like`
-- `audio_speech_like`
-- `audio_beep_like`
-- `audio_busy_like`
-- `audio_unknown`
-- `audio_error`
-- `audio_stopped`
+Create `backend/.env` from `backend/.env.example`.
 
-Audio analysis is local and ephemeral through `chrome.tabCapture`, an offscreen document, `AudioContext`, and `AnalyserNode`.
+Use these exact key names:
 
-## Install Or Reload
+```env
+OPENAI_API_KEY=
+XAI_API_KEY=
+DEEPGRAM_API_KEY=
+AMD_STT_PROVIDER=deepgram
+AMD_AI_PROVIDER=xai
+AMD_AI_ENABLED=true
+AMD_BACKEND_PORT=8787
+```
 
-1. Open Chrome.
-2. Go to `chrome://extensions`.
-3. Turn on Developer Mode.
-4. Click `Load unpacked`.
-5. Select the `google-voice-call-state-detector` folder.
-6. After code changes, click the extension reload icon on `chrome://extensions`.
-7. Reload `https://voice.google.com/`.
+Run:
 
-## Start Tab Audio
+```powershell
+python app.py
+```
 
-Either:
+Or:
 
-1. Keep the Google Voice tab active.
-2. Click the extension icon.
-3. Click `Start Tab Audio Analysis`.
+```powershell
+uvicorn app:app --host 127.0.0.1 --port 8787 --reload
+```
 
-Or use the floating overlay:
+Health check:
 
-1. Click `Start Audio`.
-2. Click `Stop Audio` when finished.
+```powershell
+curl http://127.0.0.1:8787/health
+```
 
-## Real-Time Debug Events
+The health endpoint returns boolean key status only.
 
-AMD event:
+## Reload Extension
+
+1. Open `chrome://extensions`.
+2. Enable Developer Mode.
+3. Click reload on `Google Voice Real Call State Detector`.
+4. Open or refresh `https://voice.google.com/`.
+5. Confirm the draggable AMD overlay appears.
+
+## Start Live Audio
+
+1. Start the backend.
+2. Keep the Google Voice tab active.
+3. Click `Start Audio` in the overlay or `Start Tab Audio Analysis` in the popup.
+4. The overlay should show:
+   - `Backend WS = yes`
+   - `Deepgram = yes` when the key is valid and the Deepgram socket connects
+   - RMS, peak, dominant frequency, ZCR, tone stability, and audio frame count
+   - last transcript text when Deepgram hears speech
+
+If the backend is off, the extension still runs local AMD and shows backend disconnected.
+
+## DevTools
 
 ```js
 window.addEventListener("GV_AMD_STATE_UPDATE", e => console.log(e.detail));
 ```
 
-Backward-compatible call-state event:
+Backward-compatible event:
 
 ```js
 window.addEventListener("GV_CALL_STATE_UPDATE", e => console.log(e.detail));
 ```
 
-Page message event:
+## Manual Tests
 
-```js
-window.addEventListener("message", e => {
-  if (e.data?.type === "GV_AMD_STATE_UPDATE") console.log(e.data.payload);
-});
+Test A: Dialpad only
+
+- Expected: `domState = dialpad_ready`
+- Not expected: `active_call_ui`
+
+Test B: Outbound ringing
+
+- Expected: `domState = active_call_ui`
+- Expected: `audioState = audio_ringback_like` or useful debug metrics
+- Expected: `finalAmdState = still_ringing` when ringback pattern is detected
+
+Test C: Human says hello
+
+- Expected: `audioState = audio_speech_like`
+- Deepgram may show `hello`, `hi`, or similar
+- Expected: `finalAmdState = human_picked` only with short speech/pause and no voicemail evidence
+- Expected: `recommendedAction = connect_agent`
+
+Test D: Voicemail
+
+- Expected: transcript phrase such as `please leave your message` or `after the tone`
+- Expected: `finalAmdState = voicemail_detected`
+- Expected: `recommendedAction = skip_or_hangup`
+
+Test E: Busy
+
+- Expected: `audio_busy_like` or visible failure text
+- Expected: `finalAmdState = busy_or_failed`
+
+Test F: Hang up
+
+- Expected: `domState = ended` or `idle`
+- Expected: `finalAmdState = ended`
+
+Test G: Backend off
+
+- Expected: no crash
+- Expected: `Backend WS = no`
+- Expected: local audio metrics still update
+
+## Sample Library
+
+From `backend/`:
+
+```powershell
+python generate_samples.py
+python test_samples.py
 ```
 
-## Manual Testing Checklist
+The generated samples are synthetic tones/text fixtures for calibration and regression tests.
 
-Test A: Open Google Voice dialpad only.
+## Limitations
 
-Expected:
-
-- `domState = dialpad_ready`
-- `finalAmdState = unknown`
-- not `active_call_ui`
-
-Test B: Start outbound call while ringing.
-
-Expected:
-
-- `domState = active_call_ui`
-- `audioState = audio_ringback_like` or `audio_unknown`
-- `finalAmdState = still_ringing` when ringback pattern is detected
-
-Test C: Human says hello.
-
-Expected:
-
-- `audioState = audio_speech_like`
-- `finalAmdState = human_picked` only after short speech plus short pause and no beep/voicemail phrase
-
-Test D: Voicemail greeting.
-
-Expected:
-
-- long speech, voicemail phrase, or beep causes `finalAmdState = voicemail_detected`
-
-Test E: Hang up.
-
-Expected:
-
-- `domState = ended` or `idle`
-- `finalAmdState = ended`
-
-## Optional Backend
-
-The optional FastAPI backend in `backend/` can classify short transcript text only. It does not receive raw audio by default.
-
-Local env files are ignored:
-
-- `.env`
-- `backend/.env`
-
-Create local config from:
-
-- `.env.example`
-- `backend/.env.example`
-
-The backend reads `XAI_API_KEY` from environment variables only. Never put API keys in extension files.
-
-Run:
-
-```bash
-pip install -r backend/requirements.txt
-uvicorn backend.app:app --reload --port 8787
-```
-
-Health check returns boolean key status only.
+AMD is heuristic and needs real-call tuning. Google Voice UI can change, browser tab capture can vary by device, and speech/transcript timing affects human-vs-voicemail confidence. The system is designed to expose enough live metrics to tune thresholds safely.
 
 ## Safety
 
-Use only on calls you are legally allowed to monitor. This extension detects UI/audio state only and does not record audio.
+Use only on calls you are legally allowed to monitor. Do not commit `.env` files or API keys. The extension detects UI/audio state and does not record audio.
