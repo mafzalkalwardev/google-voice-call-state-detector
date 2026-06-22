@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GV AMD Detector",
-  "version": "1.1.0",
+  "version": "1.0.0",
   "description": "Google Voice answering machine detection with local tab-audio metrics and optional backend transcription. Does not record audio.",
   "permissions": [
     "storage",
@@ -11,9 +11,7 @@
     "offscreen"
   ],
   "host_permissions": [
-    "https://voice.google.com/*",
-    "http://127.0.0.1/*",
-    "http://localhost/*"
+    "https://voice.google.com/*"
   ],
   "background": {
     "service_worker": "background.js"

@@ -12,3 +12,4 @@ node_modules/
 *.wav
 *.mp3
 debug-recordings/
+dist/
