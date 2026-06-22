@@ -84,6 +84,16 @@ The health endpoint returns boolean key status only.
 4. Open or refresh `https://voice.google.com/`.
 5. Confirm the draggable AMD overlay appears.
 
+## UI
+
+The overlay uses five compact tabs:
+
+- Main: final AMD state, confidence, recommended action, and core call summary
+- Connections: backend, Deepgram, OpenAI, and xAI/Grok status
+- Metrics: live audio and timing diagnostics
+- History: recent AMD transitions plus copy/download/clear controls
+- Settings: audio controls, backend URL, debug mode, compact mode, and reset
+
 ## Start Live Audio
 
 1. Start the backend.
@@ -140,7 +150,7 @@ Test D2: Google Voice call screening
 
 - Transcript example: `Please state your name after the tone, and Google Voice will try to connect you`
 - Expected: `finalAmdState = call_screening_prompt`
-- Expected: `recommendedAction = say_name_then_continue_waiting`
+- Expected: `recommendedAction = prompt_agent_to_say_name`
 - Expected: `AMD phase = screening_prompt`, then `post_screening_wait` while it continues listening
 
 Test E: Busy
@@ -170,11 +180,74 @@ python test_samples.py
 
 The generated samples are synthetic tones/text fixtures for calibration and regression tests.
 
+## Chrome Web Store Preparation
+
+### Test before packaging
+1. Load the extension unpacked via `chrome://extensions`.
+2. Visit `https://voice.google.com/` in a separate window.
+3. Trigger each manual test case in the README and confirm expected states.
+4. Open the popup and Connections tab to verify backend/API status indicators.
+
+### Check for errors
+- Open `chrome://extensions`, enable Developer Mode, and inspect the extension's service worker for console errors.
+- Use the Offscreen document console if available for audio capture logs.
+- Verify no uncaught exceptions appear when starting or stopping audio.
+
+### Verify no API keys are included
+- Search the extension folder for common API-key prefixes and your own development key strings.
+- Confirm that `background.js`, `popup.js`, `content.js`, and `offscreen.js` do not contain hardcoded keys.
+- Confirm `manifest.json` does not include `web_accessible_resources` that expose secrets.
+
+### Zip extension safely
+- Create a clean folder with only the files required by the extension.
+- Include `manifest.json`, JS/CSS/HTML files, and icon assets.
+- Exclude `node_modules`, `.env`, backend files, debug recordings, caches, and VCS folders.
+
+### What not to include in the zip
+- `.env`, `backend/`, `node_modules/`, `**pycache__/`, `.git/`, sample recordings, debug logs, and any temporary or credential files.
+
 ## Limitations
 
 AMD is heuristic and needs real-call tuning. Google Voice UI can change, browser tab capture can vary by device, and speech/transcript timing affects human-vs-voicemail confidence. The system is designed to expose enough live metrics to tune thresholds safely.
 
 Set `AMD_DEBUG=true` only when you need backend/offscreen debug logs. Debug output must never include API keys.
+
+## Chrome Web Store Listing Draft
+
+Short description:
+
+```text
+Live Google Voice AMD helper with local audio metrics, optional backend transcription, and compact call-state diagnostics.
+```
+
+Long description:
+
+```text
+GV AMD Detector helps users debug Google Voice web calls by detecting call session state, local tab-audio patterns, voicemail phrases, call screening prompts, busy/no-answer outcomes, and human pickup signals.
+
+The extension adds a compact draggable overlay on voice.google.com with clear color-coded AMD states, live audio metrics, backend/Deepgram connection status, state history, and JSON snapshot tools.
+
+Core detection runs locally in the browser. Optional transcript classification is handled by a local FastAPI backend, keeping API keys out of Chrome extension code.
+
+This tool is intended for calls you are legally allowed to monitor and does not record audio by default.
+```
+
+Feature highlights:
+
+- Compact tabbed overlay and popup
+- Color-coded states for ringing, human pickup, voicemail, screening prompt, busy/failed, ended, and unknown
+- Local tab-audio RMS/peak/frequency/tone metrics
+- Optional Deepgram transcript support through local backend
+- Copy/download diagnostic snapshots
+- No API keys in extension files
+
+## Privacy
+
+- Tab audio is analyzed locally in the browser.
+- Raw audio is not recorded or saved by default.
+- Optional external transcription/classification is backend-based.
+- API keys stay in local backend environment variables only.
+- `.env` and `backend/.env` are ignored and must not be committed.
 
 ## Safety
 

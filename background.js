@@ -4,6 +4,7 @@ const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
 
 let latestVoiceTabId = null;
 let audioRunning = false;
+const DEFAULT_BACKEND_URL = "http://127.0.0.1:8787";
 
 async function safeStorageSet(values) {
   try {
@@ -110,6 +111,31 @@ async function sendToContent(tabId, message) {
   }
 }
 
+async function getBackendUrl() {
+  const data = await chrome.storage.local.get(["gvDetectorSettings"]);
+  return data.gvDetectorSettings?.backendUrl || DEFAULT_BACKEND_URL;
+}
+
+async function checkBackendHealth() {
+  const backendUrl = (await getBackendUrl()).replace(/\/$/, "");
+  try {
+    const response = await fetch(`${backendUrl}/health`, { cache: "no-store" });
+    const health = await response.json();
+    return {
+      ok: response.ok,
+      backendUrl,
+      health,
+      status: response.status
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      backendUrl,
+      error: err?.message || String(err)
+    };
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
@@ -136,6 +162,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           audioRunning,
           storage
         });
+        return;
+      }
+
+      if (message?.type === "CHECK_BACKEND_HEALTH") {
+        sendResponse(await checkBackendHealth());
         return;
       }
 

@@ -157,7 +157,7 @@ def backend_update(
 
     if classifier["classification"] == "call_screening_prompt" or call_screening_detected:
         final_state = "call_screening_prompt"
-        recommended_action = "say_name_then_continue_waiting"
+        recommended_action = "prompt_agent_to_say_name"
     elif classifier["classification"] == "voicemail_greeting" or voicemail_phrase_detected:
         final_state = "voicemail_detected"
         recommended_action = "skip_or_hangup"

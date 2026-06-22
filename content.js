@@ -766,7 +766,7 @@
     return {
       human_picked: "connect_agent",
       voicemail_detected: "skip_or_hangup",
-      call_screening_prompt: "say_name_then_continue_waiting",
+      call_screening_prompt: "prompt_agent_to_say_name",
       still_ringing: "keep_waiting",
       no_answer: "skip",
       busy_or_failed: "skip",
@@ -1001,17 +1001,17 @@
         position: fixed;
         left: 86px;
         bottom: 20px;
-        width: min(360px, calc(100vw - 24px));
+        width: min(374px, calc(100vw - 24px));
         max-height: 82vh;
         overflow: auto;
         z-index: 2147483647;
         pointer-events: auto;
-        background: #111827;
+        background: linear-gradient(180deg, #101827 0%, #0b1120 100%);
         color: #f9fafb;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        border-radius: 8px;
-        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
-        font-family: Arial, sans-serif;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        border-radius: 14px;
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.42);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
         font-size: 12px;
       }
       .header {
@@ -1019,11 +1019,12 @@
         justify-content: space-between;
         align-items: center;
         gap: 8px;
-        padding: 12px 14px;
+        padding: 10px 12px;
         border-bottom: 1px solid rgba(255, 255, 255, 0.14);
-        background: rgba(255, 255, 255, 0.04);
+        background: rgba(15, 23, 42, 0.92);
         position: sticky;
         top: 0;
+        z-index: 2;
         cursor: grab;
         user-select: none;
         touch-action: none;
@@ -1035,12 +1036,13 @@
         flex: 1;
         min-width: 0;
         font-weight: 700;
-        font-size: 14px;
+        font-size: 13px;
+        letter-spacing: 0;
       }
       .badge {
-        padding: 4px 8px;
-        border-radius: 8px;
-        background: #2563eb;
+        padding: 5px 8px;
+        border-radius: 999px;
+        background: #334155;
         color: #fff;
         font-weight: 700;
         max-width: 190px;
@@ -1048,25 +1050,95 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      .state-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-right: 6px;
+        border-radius: 999px;
+        background: currentColor;
+      }
+      .state-still_ringing, .state-incoming_ringing { color: #fbbf24; background: rgba(251, 191, 36, 0.14); border: 1px solid rgba(251, 191, 36, 0.38); }
+      .state-human_picked { color: #34d399; background: rgba(52, 211, 153, 0.14); border: 1px solid rgba(52, 211, 153, 0.38); }
+      .state-voicemail_detected { color: #fb7185; background: rgba(251, 113, 133, 0.15); border: 1px solid rgba(251, 113, 133, 0.4); }
+      .state-call_screening_prompt { color: #60a5fa; background: rgba(96, 165, 250, 0.15); border: 1px solid rgba(96, 165, 250, 0.42); }
+      .state-busy_or_failed { color: #f87171; background: rgba(248, 113, 113, 0.15); border: 1px solid rgba(248, 113, 113, 0.42); }
+      .state-no_answer { color: #f59e0b; background: rgba(245, 158, 11, 0.14); border: 1px solid rgba(245, 158, 11, 0.38); }
+      .state-ended { color: #cbd5e1; background: rgba(148, 163, 184, 0.14); border: 1px solid rgba(148, 163, 184, 0.38); }
+      .state-unknown { color: #94a3b8; background: rgba(148, 163, 184, 0.12); border: 1px solid rgba(148, 163, 184, 0.3); }
       .header-actions {
         display: flex;
         align-items: center;
         gap: 6px;
       }
-      .body { padding: 12px 14px; }
+      .body { padding: 10px; }
+      .tabs {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 4px;
+        margin-bottom: 10px;
+        padding: 3px;
+        border-radius: 10px;
+        background: rgba(15, 23, 42, 0.8);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+      }
+      .tab-btn {
+        padding: 6px 4px;
+        border-radius: 8px;
+        border: 0;
+        background: transparent;
+        color: #94a3b8;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .tab-btn.active {
+        background: rgba(96, 165, 250, 0.16);
+        color: #e0f2fe;
+      }
+      .tab-panel { display: none; }
+      .tab-panel.active { display: block; }
+      .hero {
+        padding: 10px;
+        border-radius: 12px;
+        background: rgba(15, 23, 42, 0.82);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        margin-bottom: 10px;
+      }
+      .hero-line {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .hero-title { font-size: 15px; font-weight: 800; margin: 0; }
+      .hero-sub { color: #cbd5e1; line-height: 1.35; margin-top: 6px; }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 7px;
+      }
+      .card {
+        min-width: 0;
+        padding: 8px;
+        border-radius: 10px;
+        background: rgba(30, 41, 59, 0.64);
+        border: 1px solid rgba(148, 163, 184, 0.16);
+      }
+      .card .key { display: block; margin-bottom: 3px; }
+      .card .val { display: block; max-width: none; text-align: left; }
       .row {
         display: flex;
         justify-content: space-between;
         gap: 8px;
-        margin-bottom: 8px;
-        border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
+        margin-bottom: 6px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.09);
         padding-bottom: 6px;
       }
       .key { color: #9ca3af; }
       .val { text-align: right; font-weight: 600; max-width: 230px; word-break: break-word; }
       .signals,
       .history {
-        background: rgba(255, 255, 255, 0.06);
+        background: rgba(30, 41, 59, 0.62);
         border-radius: 8px;
         padding: 8px;
         margin-top: 8px;
@@ -1085,15 +1157,17 @@
         margin-top: 10px;
       }
       button {
-        background: #374151;
+        background: #1f2937;
         color: #f9fafb;
-        border: 1px solid rgba(255, 255, 255, 0.14);
+        border: 1px solid rgba(148, 163, 184, 0.2);
         border-radius: 8px;
         padding: 8px;
         cursor: pointer;
         font-size: 12px;
       }
       button:hover { background: #4b5563; }
+      .primary-btn { background: #1d4ed8; border-color: rgba(96, 165, 250, 0.45); }
+      .danger-btn { background: #7f1d1d; border-color: rgba(248, 113, 113, 0.45); }
       .minimize-btn {
         padding: 5px 8px;
         white-space: nowrap;
@@ -1117,8 +1191,51 @@
       .panel.minimized .badge {
         max-width: min(240px, calc(100vw - 112px));
       }
+      .panel.compact .card { padding: 6px; }
+      .panel.compact .body { padding: 8px; }
+      .panel.compact .hero { padding: 8px; }
       .small { color: #9ca3af; font-size: 11px; line-height: 1.35; }
       .danger { color: #fca5a5; }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 3px 7px;
+        border-radius: 999px;
+        font-weight: 800;
+        font-size: 11px;
+      }
+      .bar {
+        height: 5px;
+        margin-top: 5px;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.16);
+        overflow: hidden;
+      }
+      .bar > span {
+        display: block;
+        height: 100%;
+        width: 0%;
+        border-radius: inherit;
+        background: #60a5fa;
+      }
+      input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        margin-top: 5px;
+        padding: 7px;
+        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        background: rgba(15, 23, 42, 0.8);
+        color: #f8fafc;
+      }
+      label.toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin: 8px 0;
+      }
       ul { margin: 6px 0 0 16px; padding: 0; }
     `;
 
@@ -1133,47 +1250,102 @@
         </div>
       </div>
       <div class="body">
-        <div class="row"><span class="key">DOM session</span><span class="val" id="domState">-</span></div>
-        <div class="row"><span class="key">Audio</span><span class="val" id="audioState">-</span></div>
-        <div class="row"><span class="key">Backend WS</span><span class="val" id="backendConnected">-</span></div>
-        <div class="row"><span class="key">Deepgram</span><span class="val" id="deepgramConnected">-</span></div>
-        <div class="row"><span class="key">Deepgram event</span><span class="val" id="deepgramLastEvent">-</span></div>
-        <div class="row"><span class="key">Deepgram error</span><span class="val" id="deepgramError">-</span></div>
-        <div class="row"><span class="key">Backend error</span><span class="val" id="backendLastError">-</span></div>
-        <div class="row"><span class="key">Final AMD</span><span class="val" id="amdState">-</span></div>
-        <div class="row"><span class="key">Confidence</span><span class="val" id="confidence">-</span></div>
-        <div class="row"><span class="key">Number</span><span class="val" id="number">-</span></div>
-        <div class="row"><span class="key">Timer</span><span class="val" id="timer">-</span></div>
-        <div class="row"><span class="key">RMS</span><span class="val" id="rms">-</span></div>
-        <div class="row"><span class="key">Peak</span><span class="val" id="peak">-</span></div>
-        <div class="row"><span class="key">Dominant freq</span><span class="val" id="dominantFrequency">-</span></div>
-        <div class="row"><span class="key">Zero crossing</span><span class="val" id="zcr">-</span></div>
-        <div class="row"><span class="key">Tone stability</span><span class="val" id="toneStability">-</span></div>
-        <div class="row"><span class="key">Audio frames</span><span class="val" id="audioFrameCount">-</span></div>
-        <div class="row"><span class="key">Ringback</span><span class="val" id="ringbackMs">-</span></div>
-        <div class="row"><span class="key">Speech total</span><span class="val" id="speechMs">-</span></div>
-        <div class="row"><span class="key">Longest speech</span><span class="val" id="longestSpeechMs">-</span></div>
-        <div class="row"><span class="key">Silence after speech</span><span class="val" id="silenceAfterSpeechMs">-</span></div>
-        <div class="row"><span class="key">Beep detected</span><span class="val" id="beepDetected">-</span></div>
-        <div class="row"><span class="key">Busy detected</span><span class="val" id="busyDetected">-</span></div>
-        <div class="row"><span class="key">Voicemail phrase</span><span class="val" id="voicemailPhraseDetected">-</span></div>
-        <div class="row"><span class="key">Call screening</span><span class="val" id="callScreeningDetected">-</span></div>
-        <div class="row"><span class="key">AMD phase</span><span class="val" id="amdPhase">-</span></div>
-        <div class="row"><span class="key">Last transcript</span><span class="val" id="lastTranscript">-</span></div>
-        <div class="row"><span class="key">Recommended</span><span class="val" id="recommendedAction">-</span></div>
-        <div class="row"><span class="key">Reason</span><span class="val" id="reason">-</span></div>
-        <div class="small danger">AMD is heuristic. Audio is local and not recorded.</div>
-        <div class="signals"><strong>Signals</strong><div id="signals">-</div></div>
-        <div class="signals"><strong>Controls</strong><div id="controls">-</div></div>
-        <div class="history"><strong>History</strong><div id="history">-</div></div>
-        <div class="buttons">
-          <button id="startAudioBtn">Start Audio</button>
-          <button id="stopAudioBtn">Stop Audio</button>
-          <button id="pauseBtn">Pause</button>
-          <button id="copyBtn">Copy Snapshot</button>
-          <button id="downloadBtn">Download JSON</button>
-          <button id="clearBtn">Clear Logs</button>
+        <div class="tabs" role="tablist">
+          <button class="tab-btn active" data-tab="main">Main</button>
+          <button class="tab-btn" data-tab="connections">Connect</button>
+          <button class="tab-btn" data-tab="metrics">Metrics</button>
+          <button class="tab-btn" data-tab="history">History</button>
+          <button class="tab-btn" data-tab="settings">Settings</button>
         </div>
+
+        <section class="tab-panel active" data-panel="main">
+          <div class="hero">
+            <div class="hero-line">
+              <div>
+                <div class="hero-title" id="stateSentence">Waiting for evidence</div>
+                <div class="hero-sub" id="reason">No strong AMD evidence yet.</div>
+              </div>
+              <span class="pill state-unknown" id="amdState">unknown</span>
+            </div>
+          </div>
+          <div class="grid">
+            <div class="card"><span class="key">DOM session</span><span class="val" id="domState">-</span></div>
+            <div class="card"><span class="key">Audio state</span><span class="val" id="audioState">-</span></div>
+            <div class="card"><span class="key">Confidence</span><span class="val" id="confidence">-</span></div>
+            <div class="card"><span class="key">Recommended</span><span class="val" id="recommendedAction">-</span></div>
+            <div class="card"><span class="key">Number</span><span class="val" id="number">-</span></div>
+            <div class="card"><span class="key">Timer</span><span class="val" id="timer">-</span></div>
+            <div class="card"><span class="key">Ringback</span><span class="val" id="ringbackMs">-</span></div>
+            <div class="card"><span class="key">Speech total</span><span class="val" id="speechMs">-</span></div>
+            <div class="card"><span class="key">Longest speech</span><span class="val" id="longestSpeechMs">-</span></div>
+            <div class="card"><span class="key">Silence after speech</span><span class="val" id="silenceAfterSpeechMs">-</span></div>
+            <div class="card"><span class="key">Beep</span><span class="val" id="beepDetected">-</span></div>
+            <div class="card"><span class="key">Busy</span><span class="val" id="busyDetected">-</span></div>
+            <div class="card"><span class="key">Voicemail phrase</span><span class="val" id="voicemailPhraseDetected">-</span></div>
+            <div class="card"><span class="key">Call screening</span><span class="val" id="callScreeningDetected">-</span></div>
+            <div class="card"><span class="key">AMD phase</span><span class="val" id="amdPhase">normal</span></div>
+            <div class="card"><span class="key">Transcript</span><span class="val" id="lastTranscript">-</span></div>
+          </div>
+        </section>
+
+        <section class="tab-panel" data-panel="connections">
+          <div class="row"><span class="key">Backend WS</span><span class="val" id="backendConnected">-</span></div>
+          <div class="row"><span class="key">Deepgram</span><span class="val" id="deepgramConnected">-</span></div>
+          <div class="row"><span class="key">OpenAI</span><span class="val" id="openaiStatus">unknown</span></div>
+          <div class="row"><span class="key">xAI / Grok</span><span class="val" id="xaiStatus">unknown</span></div>
+          <div class="row"><span class="key">Backend health</span><span class="val" id="backendHealth">not checked</span></div>
+          <div class="row"><span class="key">Last backend event</span><span class="val" id="backendEvent">-</span></div>
+          <div class="row"><span class="key">Deepgram event</span><span class="val" id="deepgramLastEvent">-</span></div>
+          <div class="row"><span class="key">Deepgram error</span><span class="val" id="deepgramError">-</span></div>
+          <div class="row"><span class="key">Backend error</span><span class="val" id="backendLastError">-</span></div>
+          <div class="buttons">
+            <button id="checkConnectionsBtn">Check Connections</button>
+            <button id="testBackendBtn">Test Backend</button>
+            <button id="reconnectBackendBtn">Reconnect Backend</button>
+          </div>
+          <div class="small" id="connectionResult">Backend not checked yet.</div>
+        </section>
+
+        <section class="tab-panel" data-panel="metrics">
+          <div class="grid">
+            <div class="card"><span class="key">RMS</span><span class="val" id="rms">-</span><div class="bar"><span id="rmsBar"></span></div></div>
+            <div class="card"><span class="key">Peak</span><span class="val" id="peak">-</span><div class="bar"><span id="peakBar"></span></div></div>
+            <div class="card"><span class="key">Dominant freq</span><span class="val" id="dominantFrequency">-</span></div>
+            <div class="card"><span class="key">Zero crossing</span><span class="val" id="zcr">-</span></div>
+            <div class="card"><span class="key">Tone stability</span><span class="val" id="toneStability">-</span></div>
+            <div class="card"><span class="key">Audio frames</span><span class="val" id="audioFrameCount">-</span></div>
+            <div class="card"><span class="key">Ringback duration</span><span class="val" id="metricRingbackMs">-</span></div>
+            <div class="card"><span class="key">Speech total</span><span class="val" id="metricSpeechMs">-</span></div>
+            <div class="card"><span class="key">Longest speech</span><span class="val" id="metricLongestSpeechMs">-</span></div>
+            <div class="card"><span class="key">Silence after speech</span><span class="val" id="metricSilenceAfterSpeechMs">-</span></div>
+          </div>
+        </section>
+
+        <section class="tab-panel" data-panel="history">
+          <div class="history"><div id="history">-</div></div>
+          <div class="buttons">
+            <button id="copyBtn">Copy Snapshot</button>
+            <button id="downloadBtn">Download JSON</button>
+            <button id="clearBtn">Clear Logs</button>
+          </div>
+        </section>
+
+        <section class="tab-panel" data-panel="settings">
+          <div class="buttons">
+            <button class="primary-btn" id="startAudioBtn">Start Audio</button>
+            <button class="danger-btn" id="stopAudioBtn">Stop Audio</button>
+            <button id="pauseBtn">Pause</button>
+            <button id="settingsMinimizeBtn">Minimize</button>
+            <button id="resetStateBtn">Reset Detector</button>
+          </div>
+          <label class="small">Backend URL<input id="backendUrlInput" type="text" value="http://127.0.0.1:8787"></label>
+          <label class="toggle small"><span>Debug mode</span><input id="debugToggle" type="checkbox"></label>
+          <label class="toggle small"><span>Auto-connect backend on start</span><input id="autoConnectToggle" type="checkbox" checked></label>
+          <label class="toggle small"><span>Compact mode</span><input id="compactToggle" type="checkbox"></label>
+          <div class="signals"><strong>Signals</strong><div id="signals">-</div></div>
+          <div class="signals"><strong>Controls</strong><div id="controls">-</div></div>
+          <div class="small danger">AMD is heuristic. Audio is local and not recorded.</div>
+        </section>
       </div>
     `;
 
@@ -1182,12 +1354,15 @@
 
     restoreOverlayPosition(panel);
     installOverlayDragBehavior(root, panel);
+    installOverlayTabs(root);
+    restoreOverlaySettings(root, panel);
 
     root.getElementById("minimizeBtn").addEventListener("click", () => {
-      state.overlayMinimized = !state.overlayMinimized;
-      panel.classList.toggle("minimized", state.overlayMinimized);
-      root.getElementById("minimizeBtn").textContent = state.overlayMinimized ? "Expand" : "Minimize";
-      clampAndApplyOverlayPosition(panel, readPanelPosition(panel), { save: true });
+      toggleOverlayMinimized(root, panel);
+    });
+
+    root.getElementById("settingsMinimizeBtn").addEventListener("click", () => {
+      toggleOverlayMinimized(root, panel);
     });
 
     root.getElementById("startAudioBtn").addEventListener("click", async () => {
@@ -1226,6 +1401,106 @@
       state.history = [];
       renderOverlay(state.lastPayload);
     });
+
+    root.getElementById("resetStateBtn").addEventListener("click", () => {
+      resetAmdTimeline();
+      updateState("manual-reset");
+    });
+
+    root.getElementById("checkConnectionsBtn").addEventListener("click", () => checkConnections(root));
+    root.getElementById("testBackendBtn").addEventListener("click", () => checkConnections(root));
+    root.getElementById("reconnectBackendBtn").addEventListener("click", async () => {
+      await chrome.runtime.sendMessage({ type: "STOP_AUDIO_FROM_OVERLAY" }).catch(() => {});
+      await chrome.runtime.sendMessage({ type: "START_AUDIO_FROM_OVERLAY" }).catch(() => {});
+      await checkConnections(root);
+    });
+  }
+
+  function toggleOverlayMinimized(root, panel) {
+    state.overlayMinimized = !state.overlayMinimized;
+    panel.classList.toggle("minimized", state.overlayMinimized);
+    root.getElementById("minimizeBtn").textContent = state.overlayMinimized ? "Expand" : "Minimize";
+    root.getElementById("settingsMinimizeBtn").textContent = state.overlayMinimized ? "Expand" : "Minimize";
+    clampAndApplyOverlayPosition(panel, readPanelPosition(panel), { save: true });
+  }
+
+  function installOverlayTabs(root) {
+    const buttons = [...root.querySelectorAll(".tab-btn")];
+    const panels = [...root.querySelectorAll(".tab-panel")];
+
+    for (const button of buttons) {
+      button.addEventListener("click", () => {
+        const tab = button.dataset.tab;
+        buttons.forEach((item) => item.classList.toggle("active", item === button));
+        panels.forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === tab));
+      });
+    }
+  }
+
+  async function restoreOverlaySettings(root, panel) {
+    const defaults = {
+      backendUrl: "http://127.0.0.1:8787",
+      debug: false,
+      autoConnect: true,
+      compact: false
+    };
+    const data = await chrome.storage.local.get(["gvDetectorSettings"]).catch(() => ({}));
+    const settings = { ...defaults, ...(data.gvDetectorSettings || {}) };
+
+    const backendUrlInput = root.getElementById("backendUrlInput");
+    const debugToggle = root.getElementById("debugToggle");
+    const autoConnectToggle = root.getElementById("autoConnectToggle");
+    const compactToggle = root.getElementById("compactToggle");
+
+    backendUrlInput.value = settings.backendUrl;
+    debugToggle.checked = Boolean(settings.debug);
+    autoConnectToggle.checked = Boolean(settings.autoConnect);
+    compactToggle.checked = Boolean(settings.compact);
+    panel.classList.toggle("compact", settings.compact);
+
+    const save = async () => {
+      const next = {
+        backendUrl: backendUrlInput.value.trim() || defaults.backendUrl,
+        debug: debugToggle.checked,
+        autoConnect: autoConnectToggle.checked,
+        compact: compactToggle.checked
+      };
+      panel.classList.toggle("compact", next.compact);
+      await chrome.storage.local.set({ gvDetectorSettings: next }).catch(() => {});
+      try {
+        localStorage.setItem("AMD_DEBUG", next.debug ? "true" : "false");
+      } catch (err) {
+        // Ignore storage failures in restricted modes.
+      }
+    };
+
+    backendUrlInput.addEventListener("change", save);
+    debugToggle.addEventListener("change", save);
+    autoConnectToggle.addEventListener("change", save);
+    compactToggle.addEventListener("change", save);
+  }
+
+  async function checkConnections(root) {
+    const resultEl = root.getElementById("connectionResult");
+    setText(root, "backendHealth", "checking");
+    resultEl.textContent = "Checking backend health...";
+
+    const result = await chrome.runtime.sendMessage({ type: "CHECK_BACKEND_HEALTH" }).catch((err) => ({
+      ok: false,
+      error: err?.message || String(err)
+    }));
+
+    if (result?.ok) {
+      const health = result.health || {};
+      setText(root, "backendHealth", "connected");
+      setText(root, "openaiStatus", health.openai_key_found ? "configured" : "missing key");
+      setText(root, "xaiStatus", health.xai_key_found ? "configured" : "missing key");
+      resultEl.textContent = `Backend ok. Deepgram key: ${health.deepgram_key_found ? "found" : "missing"}.`;
+      return;
+    }
+
+    setText(root, "backendHealth", "error");
+    resultEl.textContent = result?.error || "Backend health check failed.";
   }
 
   function restoreOverlayPosition(panel) {
@@ -1353,7 +1628,9 @@
     const root = host?.shadowRoot;
     if (!root || !payload) return;
 
-    setText(root, "finalState", payload.finalAmdState);
+    const meta = getStateMeta(payload.finalAmdState);
+    setText(root, "finalState", `${payload.finalAmdState} | ${Math.round((payload.confidence || 0) * 100)}%`);
+    setText(root, "stateSentence", meta.sentence);
     setText(root, "domState", payload.domState);
     setText(root, "audioState", payload.audioState);
     setText(root, "backendConnected", payload.backendConnected ? "yes" : "no");
@@ -1375,6 +1652,10 @@
     setText(root, "speechMs", formatMs(payload.metrics?.totalSpeechMs));
     setText(root, "longestSpeechMs", formatMs(payload.metrics?.longestSpeechMs));
     setText(root, "silenceAfterSpeechMs", formatMs(payload.metrics?.silenceAfterSpeechMs));
+    setText(root, "metricRingbackMs", formatMs(payload.metrics?.ringbackTotalMs));
+    setText(root, "metricSpeechMs", formatMs(payload.metrics?.totalSpeechMs));
+    setText(root, "metricLongestSpeechMs", formatMs(payload.metrics?.longestSpeechMs));
+    setText(root, "metricSilenceAfterSpeechMs", formatMs(payload.metrics?.silenceAfterSpeechMs));
     setText(root, "beepDetected", payload.metrics?.beepDetected ? "yes" : "no");
     setText(root, "busyDetected", payload.metrics?.busyDetected ? "yes" : "no");
     setText(root, "voicemailPhraseDetected", payload.metrics?.voicemailPhraseDetected ? "yes" : "no");
@@ -1383,15 +1664,51 @@
     setText(root, "lastTranscript", payload.transcript?.lastText || "-");
     setText(root, "recommendedAction", payload.recommendedAction || "-");
     setText(root, "reason", payload.reason || "-");
+    updateStateClass(root.getElementById("finalState"), payload.finalAmdState);
+    updateStateClass(root.getElementById("amdState"), payload.finalAmdState);
+    setBar(root, "rmsBar", Math.min(100, (payload.metrics?.rms || 0) * 600));
+    setBar(root, "peakBar", Math.min(100, (payload.metrics?.peak || 0) * 300));
 
     setHtml(root, "signals", safeList(payload.signals));
     setHtml(root, "controls", safeList(payload.controls?.slice(0, 20) || []));
     setHtml(root, "history", state.history.length ? state.history.map((item) => `
-      <div class="history-item">
+      <div class="history-item ${stateClass(item.finalAmdState || item.finalState)}">
         <strong>${escapeHtml(item.time)}</strong> - ${escapeHtml(item.finalAmdState || item.finalState)}
         <br><span class="small">DOM: ${escapeHtml(item.domState)} | Audio: ${escapeHtml(item.audioState)} | ${Math.round((item.confidence || 0) * 100)}%</span>
+        <br><span class="small">${escapeHtml(item.reason || "")}</span>
       </div>
     `).join("") : "-");
+  }
+
+  function getStateMeta(finalState) {
+    return {
+      still_ringing: { sentence: "Call is still ringing" },
+      human_picked: { sentence: "Human answered" },
+      voicemail_detected: { sentence: "Voicemail detected" },
+      call_screening_prompt: { sentence: "Call screening prompt detected" },
+      busy_or_failed: { sentence: "Busy or failed" },
+      no_answer: { sentence: "No answer" },
+      ended: { sentence: "Call ended" },
+      unknown: { sentence: "Waiting for evidence" }
+    }[finalState] || { sentence: "Waiting for evidence" };
+  }
+
+  function stateClass(finalState) {
+    return `state-${String(finalState || "unknown").replaceAll("_", "_")}`;
+  }
+
+  function updateStateClass(el, finalState) {
+    if (!el) return;
+    el.className = el.className
+      .split(/\s+/)
+      .filter((item) => item && !item.startsWith("state-"))
+      .join(" ");
+    el.classList.add(stateClass(finalState));
+  }
+
+  function setBar(root, id, value) {
+    const el = root.getElementById(id);
+    if (el) el.style.width = `${Math.max(0, Math.min(100, value || 0))}%`;
   }
 
   function formatMs(value) {

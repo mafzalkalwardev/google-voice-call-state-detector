@@ -20,7 +20,7 @@ const audioMemory = {
 const BACKEND_WS_URL = "ws://127.0.0.1:8787/ws/amd-audio";
 const TARGET_SAMPLE_RATE = 16000;
 const PCM_CHUNK_SAMPLES = 3200;
-const AMD_DEBUG = localStorage.getItem("AMD_DEBUG") === "true";
+let amdDebug = false;
 
 const STRONG_AUDIO_STATES = new Set([
   "audio_ringback_like",
@@ -50,11 +50,13 @@ function safeSendBackend(update) {
 }
 
 function debugLog(...args) {
-  if (AMD_DEBUG) console.log("[GV AMD offscreen]", ...args);
+  if (amdDebug) console.log("[GV AMD offscreen]", ...args);
 }
 
 async function startTabAudio(streamId) {
   await stopTabAudio({ sendStopped: false });
+  const data = await chrome.storage.local.get(["gvDetectorSettings"]).catch(() => ({}));
+  amdDebug = Boolean(data.gvDetectorSettings?.debug);
 
   mediaStream = await navigator.mediaDevices.getUserMedia({
     audio: {
@@ -171,11 +173,26 @@ function setupPcmStreaming() {
   silentSink.connect(audioContext.destination);
 }
 
-function connectBackendWebSocket() {
+async function getBackendWsUrl() {
+  const data = await chrome.storage.local.get(["gvDetectorSettings"]).catch(() => ({}));
+  const backendUrl = data.gvDetectorSettings?.backendUrl || "http://127.0.0.1:8787";
+  try {
+    const url = new URL(backendUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.pathname = "/ws/amd-audio";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch (err) {
+    return BACKEND_WS_URL;
+  }
+}
+
+async function connectBackendWebSocket() {
   closeBackendWebSocket("reconnecting");
 
   try {
-    backendSocket = new WebSocket(BACKEND_WS_URL);
+    backendSocket = new WebSocket(await getBackendWsUrl());
     backendSocket.binaryType = "arraybuffer";
 
     backendSocket.onopen = () => {

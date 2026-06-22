@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Google Voice Real Call State Detector",
-  "version": "1.0.0",
-  "description": "Real-time Google Voice call state detector using DOM and optional local tab-audio heuristics. Does not record audio.",
+  "name": "GV AMD Detector",
+  "version": "1.1.0",
+  "description": "Google Voice answering machine detection with local tab-audio metrics and optional backend transcription. Does not record audio.",
   "permissions": [
     "storage",
     "tabs",
@@ -11,14 +11,28 @@
     "offscreen"
   ],
   "host_permissions": [
-    "https://voice.google.com/*"
+    "https://voice.google.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "GV Call State Detector",
-    "default_popup": "popup.html"
+    "default_title": "GV AMD Detector",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   },
   "content_scripts": [
     {
